@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 
+import os
+import sys
 import itertools
 import pickle
+import warnings
+
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -21,12 +25,10 @@ from sklearn.cross_decomposition import PLSRegression, CCA
 
 from rpy2.robjects import numpy2ri
 from rpy2.robjects.packages import importr
-
 # suppress console because of weird permission around r
-import warnings
 from rpy2.rinterface import RRuntimeWarning
+
 warnings.filterwarnings("ignore", category=RRuntimeWarning)
-import warnings
 warnings.filterwarnings('ignore') 
 
 from sparsemodels.cynumstats import cy_lin_lstsqr_mat_residual, cy_lin_lstsqr_mat, fast_se_of_slope
