@@ -61,7 +61,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, effective_zeros = sys.float_info.epsilon):
+	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, effective_zero = sys.float_info.epsilon):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
