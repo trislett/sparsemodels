@@ -45,6 +45,8 @@ except:
 	utils.install_packages('RGCCA')
 	rgcca = importr('RGCCA')
 
+# General Functions
+
 def generate_seeds(n_seeds, maxint = int(2**32 - 1)):
 	return([np.random.randint(0, maxint) for i in range(n_seeds)])
 
@@ -55,6 +57,8 @@ def pickle_load_model(filename):
 	with open(filename, 'rb') as pfile:
 		model = pickle.load(pfile)
 	return(model)
+
+# Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 
 class sgcca_rwrapper:
 	"""
@@ -479,9 +483,32 @@ class parallel_sgcca():
 		for v in range(len(views)):
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
-
-
-
+	def prediction_cv(self, l1_range, n_perm_per_block = 100):
+		"""
+		Montecarlo Cross-validation gridseach
+		"""
+		pass
+	def _premute_model(self, p, views, metric, view_index):
+		"""
+		"""
+		pass
+	def run_parallel_parameterselection(self, metric = 'mean_correlation', view_index = None, L1_penalty_range = np.arange(0.1,1.1,.1), nperms = 100):
+		"""
+		Parameters
+		----------
+		metric: str
+			Metric options are: fisherz_transformation, prediction, or mean_correlation. (Default: mean_correlation.)
+		view_index: None or int
+			Sets the view to optimize. Must be set of for prediction. If None, all pairwise correlations are used.
+		Returns
+		---------
+			self
+		"""
+		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		
+		views_train = self.subsetviews(views, self.train_index_)
+		n_views = len(views_train)
+		self.nviews_ = n_views
 # Plotting functions
 
 def scatter_histogram(x, y, xlabel = None, ylabel = None):
