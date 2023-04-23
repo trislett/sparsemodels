@@ -168,7 +168,7 @@ class sgcca_rwrapper:
 			if sparsity < sthrehold:
 				nsparsity = np.round(np.round(sthrehold, 4) + 0.0001, 4)
 				print("Sparsity of view[%d] is too low. Adjusting to new value = %1.4f" %(int(v), nsparsity))
-				self.l1_sparsity[:,v] = nsparsity
+				self.l1_sparsity[v] = nsparsity
 
 	def fit(self, X):
 		"""
@@ -224,7 +224,7 @@ class sgcca_rwrapper:
 		self.AVE_inner_ = np.array(fit.rx2('AVE')[2])
 		return(self)
 
-	def transform(self, views, calculate_loadings = False, outer = False):
+	def transform(self, views, calculate_loading = False, outer = False):
 		"""
 		Transform input views into scores (canonical variates).
 
@@ -330,7 +330,7 @@ class sgcca_rwrapper:
 		independent_index = np.arange(0, n_view, 1)
 		independent_index = independent_index[independent_index!=response_index]
 		yhat = np.zeros((scores[response_index,:,:].shape))
-		for i in range(10):
+		for i in range(scores.shape[2]):
 			X_ = scores[independent_index,:,i].T
 			Y_ = scores[response_index,:,i].T
 			reg = LinearRegression(fit_intercept=False).fit(X_,Y_)
@@ -483,11 +483,52 @@ class parallel_sgcca():
 		for v in range(len(views)):
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
-	def prediction_cv(self, l1_range, n_perm_per_block = 100):
+	def _prediction_mccv_r2(self, p, views, train_index, l1, split, n_comp = 1, scheme = 'centroid', seed = None):
+		"""
+		"""
+		def _mccvsplit(indices, split, seed = None):
+			if seed is None:
+				np.random.seed(np.random.randint(4294967295))
+			else:
+				np.random.seed(seed)
+			rand_indices = np.random.permutation(indices)
+			return(np.sort(rand_indices[:-split]), np.sort(rand_indices[-split:]))
+		cvtrainidx, cvtestidx = _mccvsplit(train_index, split, seed = seed)
+		mtrain = self.subsetviews(views, cvtrainidx)
+		mtest = self.subsetviews(views, cvtestidx)
+		mfit = sgcca_rwrapper(design_matrix = design_matrix,
+									l1_sparsity = l1,
+									n_comp = n_comp,
+									scheme = scheme).fit(mtrain)
+		mscoretest = mfit.transform(mtest)
+		return(r2_score(mscoretest[0], fit.predict(mscoretest, 0, verbose = False)))
+	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, split_test_ratio = 0.2, scheme = 'centroid'):
 		"""
 		Montecarlo Cross-validation gridseach
-		"""
-		pass
+		""" 
+		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		views_train = self.subsetviews(views, self.train_index_)
+		n_views = len(views_train)
+		n_subs = views_train[0].shape[0]
+		split = int(n_subs*split_test_ratio)
+		if design_matrix is None:
+			design_matrix = 1 - np.identity(self.n_views_)
+		Q2_mean = np.zeros_like(l1_range)
+		Q2_std = np.zeros_like(l1_range)
+		for i, l1 in enumerate(l1_range):
+			ctime = time.time()
+			seeds = generate_seeds(n_perm_per_block)
+			Q2 = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+						delayed(self._prediction_mccv_r2)(p, views = views,
+															train_index = self.train_index_,
+															l1 = l1,
+															split = split,
+															n_comp = 1,
+															scheme = scheme,
+															seed = seeds[p]) for p in range(n_perm_per_block))
+			Q2_mean[i] = np.mean(Q2)
+			Q2_std[i] = np.std(Q2)
+		return(Q2_mean, Q2_std)
 	def _premute_model(self, p, views, metric, view_index):
 		"""
 		"""
