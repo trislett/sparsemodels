@@ -158,6 +158,16 @@ class sgcca_rwrapper:
 			arr_list.append(np.array(robj[i]))
 		return(arr_list)
 
+	def _final_crit(self, robj):
+		"""
+		Convert the r crit list an numpy array of the final values.
+		"""
+		len_robj = len(robj)
+		final_values = np.zeros((len_robj))
+		for i in range(len_robj):
+			final_values[i] = np.array(robj[i])[-1]
+		return(final_values)
+
 	def check_sparsity(self):
 		"""
 		Checks if l1_sparsity is valid and adjusts it if necessary.
@@ -222,6 +232,10 @@ class sgcca_rwrapper:
 		self.AVE_views_ = np.array(fit.rx2('AVE')[0]) # this is the mean of the structural coefficents
 		self.AVE_outer_ = np.array(fit.rx2('AVE')[1])
 		self.AVE_inner_ = np.array(fit.rx2('AVE')[2])
+		if np.max(self.n_comp) == 1:
+			self.crit = np.array(fit.rx2('crit'))
+		else:
+			self.crit = self._final_crit(fit.rx2('crit'))
 		return(self)
 
 	def transform(self, views, calculate_loading = False, outer = False):
@@ -341,14 +355,14 @@ class sgcca_rwrapper:
 		return(yhat)
 
 class parallel_sgcca():
-	def __init__(self, n_jobs = 8, n_permutations = 10000):
+	def __init__(self, n_jobs = 12, n_permutations = 10000):
 		"""
 		Main SGCCA function
 		"""
 		self.n_jobs = n_jobs
 		self.n_permutations = n_permutations
 	def _datestamp(self):
-		print("2023_21_04")
+		print("2023_24_04")
 	def nfoldsplit_group(self, group, n_fold = 10, holdout = 0, train_index = None, verbose = False, debug_verbose = False, seed = None):
 		"""
 		Creates indexed array(s) for k-fold cross validation with holdout option for test data. The ratio of the groups are maintained. To reshuffle the training, if can be passed back through via index_train.
@@ -452,7 +466,7 @@ class parallel_sgcca():
 				print("\nTEST:" )
 				print(np.sort(original_group[test_index]))
 		return(fold_indices, train_index, test_index)
-	def create_nfold(self, group, n_fold = 10, holdout = 0.3, verbose = True):
+	def create_nfold(self, group, n_fold = 10, holdout = 0.3, verbose = False):
 		"""
 		Imports the data and runs nfoldsplit_group.
 		"""
@@ -483,7 +497,7 @@ class parallel_sgcca():
 		for v in range(len(views)):
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
-	def _prediction_mccv_r2(self, p, views, train_index, l1, split, n_comp = 1, scheme = 'centroid', seed = None):
+	def _prediction_mccv_r2(self, p, views, design_matrix, train_index, l1, split, n_comp = 1, scheme = 'factorial', seed = None):
 		"""
 		"""
 		def _mccvsplit(indices, split, seed = None):
@@ -501,8 +515,8 @@ class parallel_sgcca():
 									n_comp = n_comp,
 									scheme = scheme).fit(mtrain)
 		mscoretest = mfit.transform(mtest)
-		return(r2_score(mscoretest[0], fit.predict(mscoretest, 0, verbose = False)))
-	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, split_test_ratio = 0.2, scheme = 'centroid'):
+		return(r2_score(mscoretest[0], mfit.predict(mscoretest, 0, verbose = False)))
+	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, split_test_ratio = 0.2, scheme = 'factorial'):
 		"""
 		Montecarlo Cross-validation gridseach
 		""" 
@@ -516,10 +530,10 @@ class parallel_sgcca():
 		Q2_mean = np.zeros_like(l1_range)
 		Q2_std = np.zeros_like(l1_range)
 		for i, l1 in enumerate(l1_range):
-			ctime = time.time()
 			seeds = generate_seeds(n_perm_per_block)
 			Q2 = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 						delayed(self._prediction_mccv_r2)(p, views = views,
+															design_matrix = design_matrix,
 															train_index = self.train_index_,
 															l1 = l1,
 															split = split,
@@ -529,16 +543,65 @@ class parallel_sgcca():
 			Q2_mean[i] = np.mean(Q2)
 			Q2_std[i] = np.std(Q2)
 		return(Q2_mean, Q2_std)
-	def _premute_model(self, p, views, metric, view_index):
+
+
+
+	def _permute_cc(self, p, views_train, L1_penalty, max_piter = 5, n_components = 1, fishertransformation = True, seed = None):
 		"""
+		Selection of best hyperparameters using permutation testing.
 		"""
-		pass
-	def run_parallel_parameterselection(self, metric = 'mean_correlation', view_index = None, L1_penalty_range = np.arange(0.1,1.1,.1), nperms = 100):
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		else:
+			np.random.seed(seed)
+		if p % 20 == 0:
+			print(p)
+		L1_penalty = self.check_penalties(L1_penalty, views_train, printwarning = False) # the user was already warned
+		perm_mssca = mscca_rwrapper(n_components = n_components,
+											L1_penalty = L1_penalty,
+											max_iter = max_piter).fit(self.permute_views(views_train, seed), just_weights = True)
+		if fishertransformation:
+			sumcorr = np.arctanh(perm_mssca.canonicalcorrviews()[0]).sum()
+		else:
+			sumcorr = perm_mssca.cors_[0]
+		return(sumcorr)
+
+	def _premute_model(self, p, views, l1, design_matrix, matidx, n_comp = 1, scheme = 'factorial',  metric = 'fisherz_transformation', effective_zero = sys.float_info.epsilon, seed = None):
+		"""
+		Selection of best hyperparameters using permutation testing.
+		"""
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		else:
+			np.random.seed(seed)
+		if p % 20 == 0:
+			print(p)
+		pmdl = sgcca_rwrapper(design_matrix = design_matrix,
+									l1_sparsity = float(l1),
+									n_comp = n_comp,
+									scheme = str(scheme),
+									scale = True,
+									init = "svd",
+									bias = True,
+									effective_zero = float(effective_zero)).fit(self.permute_views(views))
+		matidx = np.array(design_matrix, bool)
+		matidx[np.tril_indices(len(views))] = False
+		if metric == 'fisherz_transformation':
+			mat = np.corrcoef(pmdl.scores_[:,:,0])
+			pstat = np.sum(np.abs(np.arctanh(mat))[matidx])
+		elif metric == 'mean_correlation':
+			mat = np.corrcoef(pmdl.scores_[:,:,0])
+			pstat = np.mean(np.abs(mat)[matidx])
+		else:
+			pstat = np.sum(pmdl.crit)
+		return(pstat)
+
+	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, scheme = 'factorial', metric = 'objective_function', effective_zero = 1e-5, verbose = True):
 		"""
 		Parameters
 		----------
 		metric: str
-			Metric options are: fisherz_transformation, prediction, or mean_correlation. (Default: mean_correlation.)
+			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: mean_correlation.)
 		view_index: None or int
 			Sets the view to optimize. Must be set of for prediction. If None, all pairwise correlations are used.
 		Returns
@@ -549,7 +612,45 @@ class parallel_sgcca():
 		
 		views_train = self.subsetviews(views, self.train_index_)
 		n_views = len(views_train)
-		self.nviews_ = n_views
+		if design_matrix is None:
+			design_matrix = 1 - np.identity(n_views)
+		matidx = np.array(design_matrix, bool)
+		matidx[np.tril_indices(len(views))] = False
+		zstat = np.zeros_like(l1_range)
+		for i, l1 in enumerate(l1_range):
+			mdl = sgcca_rwrapper(design_matrix = design_matrix,
+										l1_sparsity = l1,
+										n_comp = 1,
+										scheme = str(scheme),
+										scale = True,
+										init = "svd",
+										bias = True,
+										effective_zero = 1e-10).fit(views_train)
+			mat = np.corrcoef(mdl.scores_[:,:,0])
+			if metric == 'fisherz_transformation':
+				t = np.sum(np.abs(np.arctanh(mat))[matidx])
+			elif metric == 'mean_correlation':
+				t = np.mean(np.abs(mat)[matidx])
+			else:
+				t = np.sum(mdl.crit)
+			seeds = generate_seeds(n_perm_per_block)
+			tstar = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+						delayed(self._premute_model)(p = p,
+															views = views_train,
+															l1 = l1,
+															design_matrix = design_matrix,
+															matidx = matidx,
+															n_comp = 1,
+															scheme = scheme,
+															metric = metric,
+															effective_zero = effective_zero,
+															seed = seeds[p]) for p in range(n_perm_per_block))
+			z = np.divide((t - np.mean(tstar)), np.std(tstar))
+			zstat[i] = z
+			if verbose:
+				print(l1, t, np.mean(tstar), np.std(tstar), z)
+		return(zstat)
+
 # Plotting functions
 
 def scatter_histogram(x, y, xlabel = None, ylabel = None):
@@ -572,7 +673,7 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 		xs_ = np.linspace(x0, x1, 301)
 		kde = gaussian_kde(x)
 		ax_histx.plot(xs_, kde.pdf(xs_))
-		ax_histy.hist(y, bins=np.arange(y0, y1, y.var()*2), orientation='horizontal', density=True)
+		ax_histy.hist(y, bins=np.arange(y0, y1, y.var()*4), orientation='horizontal', density=True)
 		ys_ = np.linspace(y0, y1, 301)
 		kde = gaussian_kde(y)
 		ax_histy.plot(kde.pdf(ys_), ys_)
