@@ -20,7 +20,7 @@ from joblib import Parallel, delayed
 
 from sklearn.preprocessing import scale
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error, explained_variance_score
+from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error, mean_squared_error
 from sklearn.cross_decomposition import PLSRegression, CCA
 
 from rpy2.robjects import numpy2ri
@@ -58,8 +58,49 @@ def pickle_load_model(filename):
 		model = pickle.load(pfile)
 	return(model)
 
-# Sparse Generalized Canonical Correlation Analysis for Multiblock Data
+# model assessment functions
+def r_score(y_true, y_pred, scale_data = True, multioutput = 'uniform_average'):
+	"""
+	Calculates the correlation between the true and predicted values.
+	
+	The same method used is this citation:
+	Bilenko NY, Gallant JL. Pyrcca: Regularized Kernel Canonical Correlation Analysis in Python and Its Applications to Neuroimaging. Front Neuroinform. 2016 Nov 22;10:49. doi: 10.3389/fninf.2016.00049.
+	"""
+	
+	y_true = np.array(y_true)
+	y_pred = np.array(y_pred)
+	if scale_data:
+		y_true = scale(y_true)
+		y_pred = scale(y_pred)
+	n_targets = y_true.shape[1]
+	score = np.array([cy_lin_lstsqr_mat(y_true[:,target].reshape(-1,1), y_pred[:,target])[0] for target in range(n_targets)])
+	if multioutput == 'uniform_average':
+		score = np.mean(score)
+	return(score)
 
+def regression_metric_function(metric = 'r2_score', custom_function = None):
+	"""
+	Passes the metric of choice to assess model accuracy, Internal functions are: ['r_score', 'r2_score', 'mean_squared_error', 'median_absolute_error'].
+	custom_function allows passthrough of custom metric.
+	"""
+	assert multioutput in ['raw_values', 'uniform_average'], "Error: multioutput must be raw_values or uniform_average"
+	if custom_function is None:
+		if metric == 'r2_score':
+			metric_function = r2_score
+		elif metric == 'r_score':
+			metric_function = r_score
+		elif metric == 'median_absolute_error':
+			metric_function = median_absolute_error
+		elif metric == 'mean_squared_error':
+			metric_function = mean_squared_error
+		else:
+			print("Metric [%s] is not a known function. Use set_function")
+		return(metric_function)
+	else:
+		return(custom_function)
+
+
+# Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
 	"""
 	Wrapper class for the SGCCA function of the R package RGCCA.
@@ -326,6 +367,19 @@ class sgcca_rwrapper:
 	def inverse_transform(self, scores, view_index):
 		"""
 		Transforms a score back to original space.
+
+		Parameters:
+		-----------
+		scores : np.ndarray
+			2d array with shape (n_subjects, n_components)
+		view_index : int
+			index of the view that was used to transform the scores to this component space
+
+		Returns:
+		--------
+		proj : np.ndarray
+			2d array with shape (n_subjects, n_variables)
+			a projection of the scores back to the original space
 		"""
 		if hasattr(self, 'loadings_') is False:
 			self.loadings_ = self.transform(self.views_, calculate_loading = True)[1]
@@ -337,6 +391,21 @@ class sgcca_rwrapper:
 	def predict(self, scores, response_index, verbose = False):
 		"""
 		Score prediction based on a linear regression model with one view as the response variable.
+
+		Parameters:
+		-----------
+		scores : np.ndarray
+			3d array with shape (n_views, n_subjects, n_components)
+		response_index : int
+			index of the view in scores that is used as the response variable in the linear regression model
+		verbose : bool, optional
+			boolean flag that, if set to True, prints out the R-squared score for each component
+
+		Returns:
+		--------
+		yhat : np.ndarray
+			3d array with shape (n_views, n_subjects, n_components)
+			a prediction of the score based on a linear regression model with one view as the response variable
 		"""
 		if scores.ndim == 2:
 			scores = scores[:,:,np.newaxis]
@@ -355,14 +424,26 @@ class sgcca_rwrapper:
 		return(yhat)
 
 class parallel_sgcca():
-	def __init__(self, n_jobs = 12, n_permutations = 10000):
+	def __init__(self, n_jobs = 12, design_matrix = None, scheme = "factorial", n_permutations = 10000):
 		"""
 		Main SGCCA function
 		"""
 		self.n_jobs = n_jobs
 		self.n_permutations = n_permutations
+		self.design_matrix = design_matrix
+		assert scheme in np.array(["horst", "factorial", "centroid"]), "Error: %s is not a valid scheme option. Must be: horst, factorial, or centroid" % scheme
+		self.scheme = scheme
+
+	def _check_design_matrix(self, n_views):
+		if self.design_matrix is None:
+			self.design_matrix = 1 - np.identity(n_views)
+			matidx = np.array(self.design_matrix, bool)
+			matidx[np.tril_indices(len(views))] = False
+			self.matidx_ = matidx
+
 	def _datestamp(self):
 		print("2023_24_04")
+
 	def nfoldsplit_group(self, group, n_fold = 10, holdout = 0, train_index = None, verbose = False, debug_verbose = False, seed = None):
 		"""
 		Creates indexed array(s) for k-fold cross validation with holdout option for test data. The ratio of the groups are maintained. To reshuffle the training, if can be passed back through via index_train.
@@ -391,12 +472,10 @@ class parallel_sgcca():
 		test_index : array or None
 			index array of test data
 		"""
-		
 		if seed is None:
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
-		
 		test_index = None
 		original_group = group[:]
 		ugroup = np.unique(group)
@@ -466,6 +545,7 @@ class parallel_sgcca():
 				print("\nTEST:" )
 				print(np.sort(original_group[test_index]))
 		return(fold_indices, train_index, test_index)
+
 	def create_nfold(self, group, n_fold = 10, holdout = 0.3, verbose = False):
 		"""
 		Imports the data and runs nfoldsplit_group.
@@ -480,14 +560,74 @@ class parallel_sgcca():
 		self.fold_indices_ = fold_indices
 		self.test_index_ = test_index
 		self.group_ = group
+
 	def subsetviews(self, views, indices):
+		"""
+		Subsets the views data for each view using the given indices.
+
+		Parameters:
+		-----------
+		views : list
+			A list of np.ndarray views data
+		indices : np.ndarray
+			1d array of indices to use for subsetting the views data
+
+		Returns:
+		--------
+		subsetdata : list
+			A list of np.ndarray views data
+			each element in the list corresponds to a view from the input list
+		"""
 		subsetdata = []
 		for v in range(len(views)):
 			subsetdata.append(views[v][indices])
 		return(subsetdata)
+
+	def bootstrap_views(self, views, seed = None):
+		"""
+		Randomly permutes the rows of each view in the input list of views (or scores).
+
+		Parameters:
+		-----------
+		views : list
+			A list of np.ndarray views data to permute.
+		seed : int, optional
+			Seed for the random number generator. Default is None.
+
+		Returns:
+		--------
+		permutedviews : list
+			A list of np.ndarray views data with permuted rows.
+			Each element in the list corresponds to a view from the input list.
+		"""
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		else:
+			np.random.seed(seed)
+		
+		n = len(views[0])
+		indices = np.random.choice(n, size=n, replace=True)
+		bsviews = []
+		for v in range(len(views)):
+			bsviews.append(views[v][indices])
+		return(bsviews)
+
 	def permute_views(self, views, seed = None):
 		"""
-		Randomly permutes each data view
+		Randomly permutes the rows of each view in the input list of views (or scores).
+
+		Parameters:
+		-----------
+		views : list
+			A list of np.ndarray views data to permute.
+		seed : int, optional
+			Seed for the random number generator. Default is None.
+
+		Returns:
+		--------
+		permutedviews : list
+			A list of np.ndarray views data with permuted rows.
+			Each element in the list corresponds to a view from the input list.
 		"""
 		if seed is None:
 			np.random.seed(np.random.randint(4294967295))
@@ -497,7 +637,8 @@ class parallel_sgcca():
 		for v in range(len(views)):
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
-	def _prediction_mccv_r2(self, p, views, design_matrix, train_index, l1, split, n_comp = 1, scheme = 'factorial', seed = None):
+
+	def _prediction_mccv(self, p, views, train_index, l1, split, n_comp = 1, metric_function = regression_metric_function(metric = 'r2_score'), effective_zero = 1e-3, seed = None):
 		"""
 		"""
 		def _mccvsplit(indices, split, seed = None):
@@ -510,43 +651,47 @@ class parallel_sgcca():
 		cvtrainidx, cvtestidx = _mccvsplit(train_index, split, seed = seed)
 		mtrain = self.subsetviews(views, cvtrainidx)
 		mtest = self.subsetviews(views, cvtestidx)
-		mfit = sgcca_rwrapper(design_matrix = design_matrix,
+		mfit = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = l1,
 									n_comp = n_comp,
-									scheme = scheme).fit(mtrain)
+									scheme = self.scheme,
+									effective_zero = effective_zero).fit(mtrain)
 		mscoretest = mfit.transform(mtest)
 		return(r2_score(mscoretest[0], mfit.predict(mscoretest, 0, verbose = False)))
-	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, split_test_ratio = 0.2, scheme = 'factorial'):
+
+	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1),n_component_range = np.arange(1,11,1), n_perm_per_block = 200, split_test_ratio = 0.2, metric_function = regression_metric_function(metric = 'r2_score'), effective_zero = 1e-3):
 		"""
-		Montecarlo Cross-validation gridseach
+		Montecarlo cross-validation
 		""" 
 		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		self._check_design_matrix(len(views))
+		
+		# For the future, use groups.
+		
 		views_train = self.subsetviews(views, self.train_index_)
 		n_views = len(views_train)
 		n_subs = views_train[0].shape[0]
 		split = int(n_subs*split_test_ratio)
-		if design_matrix is None:
-			design_matrix = 1 - np.identity(self.n_views_)
-		Q2_mean = np.zeros_like(l1_range)
-		Q2_std = np.zeros_like(l1_range)
-		for i, l1 in enumerate(l1_range):
-			seeds = generate_seeds(n_perm_per_block)
-			Q2 = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
-						delayed(self._prediction_mccv_r2)(p, views = views,
-															design_matrix = design_matrix,
-															train_index = self.train_index_,
-															l1 = l1,
-															split = split,
-															n_comp = 1,
-															scheme = scheme,
-															seed = seeds[p]) for p in range(n_perm_per_block))
-			Q2_mean[i] = np.mean(Q2)
-			Q2_std[i] = np.std(Q2)
-		return(Q2_mean, Q2_std)
+		stat_mean = np.zeros((len(l1_range), len(n_component_range)))
+		stat_std = np.zeros((len(l1_range), len(n_component_range)))
+		for c, n_comp in enumerate(n_component_range):
+			for i, l1 in enumerate(l1_range):
+				seeds = generate_seeds(n_perm_per_block)
+				stat = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+							delayed(self._prediction_mccv)(p, views = views,
+																design_matrix = self.design_matrix,
+																train_index = self.train_index_,
+																l1 = l1,
+																split = split,
+																n_comp = n_comp,
+																metric_function = metric_function,
+																effective_zero = effective_zero,
+																seed = seeds[p]) for p in range(n_perm_per_block))
+				stat_mean[c, i] = np.mean(stat)
+				stat_std[c, i] = np.std(stat)
+		return(stat_mean, stat_std)
 
-
-
-	def _permute_cc(self, p, views_train, L1_penalty, max_piter = 5, n_components = 1, fishertransformation = True, seed = None):
+	def _premute_model(self, p, views, l1, n_comp = 1, metric = 'objective_function', effective_zero = 1e-4, seed = None):
 		"""
 		Selection of best hyperparameters using permutation testing.
 		"""
@@ -556,52 +701,36 @@ class parallel_sgcca():
 			np.random.seed(seed)
 		if p % 20 == 0:
 			print(p)
-		L1_penalty = self.check_penalties(L1_penalty, views_train, printwarning = False) # the user was already warned
-		perm_mssca = mscca_rwrapper(n_components = n_components,
-											L1_penalty = L1_penalty,
-											max_iter = max_piter).fit(self.permute_views(views_train, seed), just_weights = True)
-		if fishertransformation:
-			sumcorr = np.arctanh(perm_mssca.canonicalcorrviews()[0]).sum()
-		else:
-			sumcorr = perm_mssca.cors_[0]
-		return(sumcorr)
-
-	def _premute_model(self, p, views, l1, design_matrix, matidx, n_comp = 1, scheme = 'factorial',  metric = 'fisherz_transformation', effective_zero = sys.float_info.epsilon, seed = None):
-		"""
-		Selection of best hyperparameters using permutation testing.
-		"""
-		if seed is None:
-			np.random.seed(np.random.randint(4294967295))
-		else:
-			np.random.seed(seed)
-		if p % 20 == 0:
-			print(p)
-		pmdl = sgcca_rwrapper(design_matrix = design_matrix,
+		pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = float(l1),
 									n_comp = n_comp,
-									scheme = str(scheme),
+									scheme = self.scheme,
 									scale = True,
 									init = "svd",
 									bias = True,
 									effective_zero = float(effective_zero)).fit(self.permute_views(views))
-		matidx = np.array(design_matrix, bool)
-		matidx[np.tril_indices(len(views))] = False
 		if metric == 'fisherz_transformation':
-			mat = np.corrcoef(pmdl.scores_[:,:,0])
-			pstat = np.sum(np.abs(np.arctanh(mat))[matidx])
+			pstat = np.zeros((n_comp))
+			for c in range(n_comp):
+				mat = np.corrcoef(pmdl.scores_[:,:,0])
+				pstat[c] = np.sum(np.abs(np.arctanh(mat))[self.matidx_])
+			pstat = np.sum(pstat)
 		elif metric == 'mean_correlation':
-			mat = np.corrcoef(pmdl.scores_[:,:,0])
-			pstat = np.mean(np.abs(mat)[matidx])
+			pstat = np.zeros((n_comp))
+			for c in range(n_comp):
+				mat = np.corrcoef(pmdl.scores_[:,:,0])
+				pstat[c] = np.mean(np.abs(mat)[self.matidx_])
+			pstat = np.mean(pstat)
 		else:
 			pstat = np.sum(pmdl.crit)
 		return(pstat)
 
-	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), design_matrix = None, n_perm_per_block = 200, scheme = 'factorial', metric = 'objective_function', effective_zero = 1e-5, verbose = True):
+	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', effective_zero = 1e-4, verbose = True):
 		"""
 		Parameters
 		----------
 		metric: str
-			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: mean_correlation.)
+			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
 		view_index: None or int
 			Sets the view to optimize. Must be set of for prediction. If None, all pairwise correlations are used.
 		Returns
@@ -609,28 +738,29 @@ class parallel_sgcca():
 			self
 		"""
 		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		self._check_design_matrix(len(views))
 		
 		views_train = self.subsetviews(views, self.train_index_)
 		n_views = len(views_train)
-		if design_matrix is None:
-			design_matrix = 1 - np.identity(n_views)
-		matidx = np.array(design_matrix, bool)
-		matidx[np.tril_indices(len(views))] = False
 		zstat = np.zeros_like(l1_range)
+		tmetric = np.zeros_like(l1_range)
+		tstar_blocks = np.zeros((len(l1_range), n_perm_per_block))
+		parameterselection_l1_penalties = []
 		for i, l1 in enumerate(l1_range):
-			mdl = sgcca_rwrapper(design_matrix = design_matrix,
+			mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 										l1_sparsity = l1,
 										n_comp = 1,
-										scheme = str(scheme),
+										scheme = self.scheme,
 										scale = True,
 										init = "svd",
 										bias = True,
-										effective_zero = 1e-10).fit(views_train)
+										effective_zero = effective_zero).fit(views_train)
+			parameterselection_l1_penalties.append(mdl.l1_sparsity)
 			mat = np.corrcoef(mdl.scores_[:,:,0])
 			if metric == 'fisherz_transformation':
-				t = np.sum(np.abs(np.arctanh(mat))[matidx])
+				t = np.sum(np.abs(np.arctanh(mat))[self.matidx_])
 			elif metric == 'mean_correlation':
-				t = np.mean(np.abs(mat)[matidx])
+				t = np.mean(np.abs(mat)[self.matidx_])
 			else:
 				t = np.sum(mdl.crit)
 			seeds = generate_seeds(n_perm_per_block)
@@ -638,20 +768,246 @@ class parallel_sgcca():
 						delayed(self._premute_model)(p = p,
 															views = views_train,
 															l1 = l1,
-															design_matrix = design_matrix,
-															matidx = matidx,
 															n_comp = 1,
-															scheme = scheme,
 															metric = metric,
 															effective_zero = effective_zero,
 															seed = seeds[p]) for p in range(n_perm_per_block))
 			z = np.divide((t - np.mean(tstar)), np.std(tstar))
+			tmetric[i] = t
 			zstat[i] = z
+			tstar_blocks[i] = tstar
 			if verbose:
-				print(l1, t, np.mean(tstar), np.std(tstar), z)
-		return(zstat)
+				print("Sparsity [%1.2f]: t = %1.5f, mean(t*) = %1.5f, std(t*) = %1.5f, z-stat = %1.5f" % (l1, t, np.mean(tstar), np.std(tstar), z))
+			self.parameterselection_zstat_ = zstat
+			self.parameterselection_tmetric_ = tmetric
+			self.parameterselection_tstar_ = tstar_blocks
+			self.parameterselection_besttuningindex_ = np.argmax(zstat)
+			self.parameterselection_bestpenalties_ = l1_range[self.parameterselection_besttuningindex_]
+			self.parameterselection_l1penalties_ = np.array(parameterselection_l1_penalties)
+
+	def fit_model(self, views, n_components, l1_sparsity = None):
+		"""
+		Fits SGCCA model to the provided views.
+
+		Parameters:
+		-----------
+		views : list of np.ndarray
+			A list of 2D arrays, where each array represents a view.
+			The shape of each view is (n_variables, n_subjects).
+		n_components : int or np.ndarray
+			Number of components to fit.
+		l1_sparsity : float or np.ndarray, default=None
+			L1 sparsity parameter for the model. If None, the best
+			penalty parameter found during parameter selection (if
+			performed) will be used. If neither parameter selection nor
+			l1_sparsity is specified, l1_sparsity is set to 1.0.
+
+		Returns:
+		--------
+		self : object
+			The fitted SGCCA model object, containing the following
+			attributes:
+			- views_ : list of np.ndarray
+				The input views.
+			- n_views_ : int
+				The number of input views.
+			- design_matrix : np.ndarray
+				The concatenated design matrix.
+			- views_train_ : list of np.ndarray
+				The training set views.
+			- views_test_ : list of np.ndarray
+				The test set views.
+			- training_scores_ : np.ndarray
+				The SGCCA scores of the training set.
+				Shape: (n_subjects, n_components).
+			- training_loadings_ : list of np.ndarray
+				The SGCCA loadings of the training set views.
+				Shape: (n_variables, n_components).
+			- test_scores_ : np.ndarray
+				The SGCCA scores of the test set.
+				Shape: (n_subjects, n_components).
+			- test_loadings_ : list of np.ndarray
+				The SGCCA loadings of the test set views.
+				Shape: (n_variables, n_components).
+			- canonical_correlations_indicies_ : tuple
+				A tuple of two arrays representing the row and column
+				indices of the canonical correlations in the full
+				correlation matrix.
+			- training_canonical_correlations_ : np.ndarray
+				The canonical correlations between training set scores.
+				Shape: (n_components, n_pairwise_comparisons).
+			- test_canonical_correlations_ : np.ndarray
+				The canonical correlations between test set scores.
+				Shape: (n_components, n_pairwise_comparisons).
+			- n_components_ : int
+				The number of components in the model.
+			- l1_sparsity_ : float
+				The l1 sparsity parameter used in the model.
+			- model_obj_ : sgcca_rwrapper object
+				The underlying SGCCA model object.
+		"""
+		assert hasattr(self,'fold_indices_'), "Error: run create_nfold"
+		self.views_ = views
+		self.n_views_ = len(views)
+		self._check_design_matrix(self.n_views_)
+
+		if l1_sparsity is None:
+			if hasattr(self,'parameterselection_bestpenalties_'):
+				l1_sparsity = self.parameterselection_bestpenalties_
+				print("Parameter selection detected. Setting l1 sparsity to: %1.2f for all views" % l1_sparsity)
+			else:
+				l1_sparsity = 1.
+				print("Setting l1 sparsity to 1.0 for all views")
+
+		# note: scaling is done internally by sgcca_wrapper
+		self.views_train_ = self.subsetviews(views, self.train_index_)
+		self.views_test_ = self.subsetviews(views, self.test_index_)
+
+		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+									l1_sparsity = l1_sparsity,
+									n_comp = n_components,
+									scheme = self.scheme).fit(self.views_train_)
+		training_scores_, training_loadings_ = mdl.transform(self.views_train_, calculate_loading = True)
+		self.training_scores_ = training_scores_
+		self.training_loadings_ = training_loadings_
+		test_scores_, test_loadings_ = mdl.transform(self.views_test_, calculate_loading = True)
+		self.test_scores_ = test_scores_
+		self.test_loadings_ = test_loadings_
+		corr_index = np.where(self.matidx_)
+		training_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
+		test_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
+		for c in range(n_components):
+			training_canonical_correlation[c] = np.corrcoef(model.training_scores_[:,:,c])[corr_index]
+			test_canonical_correlation[c] = np.corrcoef(model.test_scores_[:,:,c])[corr_index]
+		self.canonical_correlations_indicies_ = corr_index
+		self.training_canonical_correlations_ = training_canonical_correlation
+		self.test_canonical_correlations_ = test_canonical_correlation
+		self.n_components_ = n_components
+		self.l1_sparsity_ = l1_sparsity
+		self.model_obj_ = mdl
+		return(self)
+
+	def _bootstrap_correlation(self, x1, x2, n_bootstraps = 10000):
+		assert x1.shape == x2.shape, "Error: x1 and x2 must have the same shape."
+		assert x1.ndim <= 2, "Error: The maximum dimensions are two."
+		n = len(x1)
+		if x1.ndim == 2:
+			corr_bootstraps = np.zeros((np.row_stack(model.model_obj_.transform(model.bootstrap_views(model.views_train_), calculate_loading=True)[1]), x1.shape[1]))
+		else:
+			x1 = x1[:,np.newaxis]
+			x2 = x2[:,np.newaxis]
+			corr_bootstraps = np.zeros((n_bootstraps, 1))
+		for i in range(n_bootstraps):
+			indices = np.random.choice(n, size=n, replace=True)
+			x1_sample = x1[indices]
+			x2_sample = x2[indices]
+			for c in range(x1.shape[1]):
+				corr_bootstraps[i,c] = pearsonr(x1_sample[:,c], x2_sample[:,c])[0]
+		return(corr_bootstraps)
+
+	def bootstrap_prediction_model(self, response_index, n_bootstraps = 10000):
+		assert hasattr(self,'model_obj_'), "Error: run fit_model"
+		# Training data
+		y = self.training_scores_[response_index]
+		y_hat = self.model_obj_.predict(self.training_scores_, response_index = response_index)
+		training_prediction_r_ = np.zeros((self.n_components_))
+		training_prediction_r_pval_ = np.zeros((self.n_components_))
+		for c in range(self.n_components_):
+			training_prediction_r_[c], training_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
+			training_prediction_rho_[c], training_prediction_rho_pval_[c] = spearmanr(y[:, c], y_hat[:, c])
+		self.prediction_model_training_dependent_ = y
+		self.prediction_model_training_predicted_ = y_hat
+		self.training_prediction_r_ = training_prediction_r_
+		self.training_prediction_r_pval_ = training_prediction_r_pval_
+		if n_bootstraps is not None:
+			corr_bootstraps = self._bootstrap_correlation(y, y_hat, n_bootstraps = n_bootstraps)
+			corr_bootstraps_pval = np.sum((corr_bootstraps < 0), 0) * 2 / n_bootstraps
+			self.training_prediction_bootstraps_ = corr_bootstraps
+			self.training_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
+			self.training_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
+			self.training_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+		# Test data
+		y = self.test_scores_[response_index]
+		y_hat = self.model_obj_.predict(self.test_scores_, response_index = response_index)
+		test_prediction_score = metric_function(y, y_hat, multioutput = multioutput)
+		test_prediction_r_ = np.zeros((self.n_components_))
+		test_prediction_r_pval_ = np.zeros((self.n_components_))
+		for c in range(self.n_components_):
+			test_prediction_r_[c], test_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
+			test_prediction_rho_[c], test_prediction_rho_pval_[c] = spearmanr(y[:, c], y_hat[:, c])
+		self.prediction_model_test_dependent_ = y
+		self.prediction_self_test_predicted_ = y_hat
+		self.test_prediction_r_ = test_prediction_r_
+		self.test_prediction_r_pval_ = test_prediction_r_pval_
+		if n_bootstraps is not None:
+			corr_bootstraps = self._bootstrap_correlation(y, y_hat, n_bootstraps = n_bootstraps)
+			corr_bootstraps_pval = np.sum((corr_bootstraps < 0), 0) * 2 / n_bootstraps
+			self.test_prediction_bootstraps_ = corr_bootstraps
+			self.test_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
+			self.test_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
+			self.test_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+
+
+# Candidate functions
+
+def _boostrap_loading(model, b, views, seed = None):
+	if b % 100 == 0:
+		print(b)
+	return(np.row_stack(model.model_obj_.transform(model.bootstrap_views(views, seed = seed), calculate_loading=True)[1]))
+
+def boostrap_model_loading(model, n_bootstraps = 1000):
+		seeds = generate_seeds(n_bootstraps)
+		bs_loadings = Parallel(n_jobs = 1, backend='multiprocessing')(
+					delayed(_boostrap_loading)(model = model, b = b, views = model.views_train_,
+														seed = seeds[b]) for b in range(n_bootstraps))
+		bs_loadings = np.array(bs_loadings)
+		start = 0
+		bootstrap_loadings_ = []
+		for v in range(model.n_views_):
+			stop = start + model.views_train_[v].shape[1]
+			bootstrap_loadings_.append(bs_loadings[:,start:stop,:])
+			start = stop
+		return(bootstrap_loadings_)
 
 # Plotting functions
+def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", png_basename = None, L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True):
+	tmetric = np.array(model.parameterselection_tmetric_)
+	tstar_ = np.array(model.parameterselection_tstar_)
+	if scale_tuning_metric:
+		for l, pen in enumerate(L1_penalty_range):
+			tmetric[l] = tmetric[l] - np.mean(tstar_[l])
+			tmetric[l] = tmetric[l] / np.std(tstar_[l])
+			tstar_[l] = tstar_[l] - np.mean(tstar_[l])
+			tstar_[l] = tstar_[l] / np.std(tstar_[l])
+	plt.subplot(211)
+	plt.plot(L1_penalty_range, model.parameterselection_zstat_, 'ko--', linewidth=1)
+	plt.ylabel("Z-statistic")
+	x1,x2,y1,y2 = plt.axis()
+	x2 = 1.1
+	y2 = np.round(y2) + 1
+	plt.xlim(0, x2)
+	plt.ylim(y1, y2)
+	plt.xticks(L1_penalty_range)
+	plt.subplot(212)
+	plt.plot(L1_penalty_range, tmetric, 'ko', linewidth=1)
+	for l, pen in enumerate(L1_penalty_range):
+		jitter = pen + np.random.normal(0, scale = L1_penalty_range[0]*0.05, size=len(tstar_[0]))
+		permz = tstar_[l]
+		plt.scatter(jitter, permz, c = 'b', marker='.', alpha = 0.5)
+	x1,x2,y1,y2 = plt.axis()
+	x2 = 1.1
+	y2 = np.round(y2) + 1
+	plt.xlim(0, x2)
+#	plt.ylim(0, y2)
+	plt.xticks(L1_penalty_range)
+	plt.xlabel(xlabel)
+	plt.ylabel(ylabel)
+	plt.tight_layout()
+	if png_basename is not None:
+		plt.savefig("%s_parameter_selection.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
 
 def scatter_histogram(x, y, xlabel = None, ylabel = None):
 	"""
@@ -694,10 +1050,6 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 	ax_histy = fig.add_subplot(gs[1, 1], sharey=ax)
 	# Draw the scatter plot and marginals.
 	_scatter_hist(x, y, ax, ax_histx, ax_histy, xlabel = xlabel, ylabel = ylabel)
-
-
-
-
 
 
 
