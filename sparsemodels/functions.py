@@ -78,7 +78,7 @@ def r_score(y_true, y_pred, scale_data = True, multioutput = 'uniform_average'):
 		score = np.mean(score)
 	return(score)
 
-def regression_metric_function(metric = 'r2_score', custom_function = None):
+def regression_metric_function(metric = 'r2_score', multioutput = 'uniform_average', custom_function = None):
 	"""
 	Passes the metric of choice to assess model accuracy, Internal functions are: ['r_score', 'r2_score', 'mean_squared_error', 'median_absolute_error'].
 	custom_function allows passthrough of custom metric.
@@ -254,6 +254,7 @@ class sgcca_rwrapper:
 		if self.scale:
 			self.views_ = self.scaleviews(self.views_)
 		self.check_sparsity()
+		
 		numpy2ri.activate()
 		fit = rgcca.sgcca(A = self.views_, 
 							C = self.design_matrix,
@@ -266,14 +267,14 @@ class sgcca_rwrapper:
 							tol = self.effective_zero,
 							verbose  = False)
 		numpy2ri.deactivate()
-
+		
 		self.scores_ = np.array(fit.rx2('Y'))
 		self.weights_outer_ = self._rlist_to_nplist(fit.rx2('a'))
 		self.weights_ = self._rlist_to_nplist(fit.rx2('astar'))
 		self.AVE_views_ = np.array(fit.rx2('AVE')[0]) # this is the mean of the structural coefficents
 		self.AVE_outer_ = np.array(fit.rx2('AVE')[1])
 		self.AVE_inner_ = np.array(fit.rx2('AVE')[2])
-		if np.max(self.n_comp) == 1:
+		if np.max(self.n_comp)== 1:
 			self.crit = np.array(fit.rx2('crit'))
 		else:
 			self.crit = self._final_crit(fit.rx2('crit'))
@@ -892,7 +893,7 @@ class parallel_sgcca():
 		assert x1.ndim <= 2, "Error: The maximum dimensions are two."
 		n = len(x1)
 		if x1.ndim == 2:
-			corr_bootstraps = np.zeros((np.row_stack(model.model_obj_.transform(model.bootstrap_views(model.views_train_), calculate_loading=True)[1]), x1.shape[1]))
+			corr_bootstraps = np.zeros((n_bootstraps, x1.shape[1]))
 		else:
 			x1 = x1[:,np.newaxis]
 			x2 = x2[:,np.newaxis]
@@ -914,7 +915,6 @@ class parallel_sgcca():
 		training_prediction_r_pval_ = np.zeros((self.n_components_))
 		for c in range(self.n_components_):
 			training_prediction_r_[c], training_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
-			training_prediction_rho_[c], training_prediction_rho_pval_[c] = spearmanr(y[:, c], y_hat[:, c])
 		self.prediction_model_training_dependent_ = y
 		self.prediction_model_training_predicted_ = y_hat
 		self.training_prediction_r_ = training_prediction_r_
@@ -929,12 +929,10 @@ class parallel_sgcca():
 		# Test data
 		y = self.test_scores_[response_index]
 		y_hat = self.model_obj_.predict(self.test_scores_, response_index = response_index)
-		test_prediction_score = metric_function(y, y_hat, multioutput = multioutput)
 		test_prediction_r_ = np.zeros((self.n_components_))
 		test_prediction_r_pval_ = np.zeros((self.n_components_))
 		for c in range(self.n_components_):
 			test_prediction_r_[c], test_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
-			test_prediction_rho_[c], test_prediction_rho_pval_[c] = spearmanr(y[:, c], y_hat[:, c])
 		self.prediction_model_test_dependent_ = y
 		self.prediction_self_test_predicted_ = y_hat
 		self.test_prediction_r_ = test_prediction_r_
