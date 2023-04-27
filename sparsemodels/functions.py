@@ -123,7 +123,13 @@ class sgcca_rwrapper:
 			Default value is 1 for all views. It is possible set a different number of components for each dataview
 		scheme : str
 			A string that specifies the algorithm used to solve the optimization problem.
-			Schheme options are "horst", "factorial" or "centroid" (Default: "centroid")
+			Scheme options are "horst", "factorial" or "centroid" (Default: "centroid")
+			Horst scheme g(x) = x
+				Penalizes structural negative correlation between components
+			Centroid scheme g(x) = |x|
+				Components can be negatively correlated
+			Factorial scheme g(x) = x**2
+				Components can be negatively correlated
 		scale : bool
 			A boolean that specifies whether to scale the views before running SGCCA.
 			Default value is True.
@@ -439,7 +445,7 @@ class parallel_sgcca():
 		if self.design_matrix is None:
 			self.design_matrix = 1 - np.identity(n_views)
 			matidx = np.array(self.design_matrix, bool)
-			matidx[np.tril_indices(len(views))] = False
+			matidx[np.tril_indices(n_views)] = False
 			self.matidx_ = matidx
 
 	def _datestamp(self):
@@ -469,7 +475,7 @@ class parallel_sgcca():
 		train_index : array
 			index array of training data
 		fold_indices : object
-			the index array for each fold (n_folds, training_fold_size)
+			the index array for each fold (n_folds, train_fold_size)
 		test_index : array or None
 			index array of test data
 		"""
@@ -586,7 +592,7 @@ class parallel_sgcca():
 
 	def bootstrap_views(self, views, seed = None):
 		"""
-		Randomly permutes the rows of each view in the input list of views (or scores).
+		Bootstraps with replacement the rows of each view in the input list of views (or scores).
 
 		Parameters:
 		-----------
@@ -818,10 +824,10 @@ class parallel_sgcca():
 				The training set views.
 			- views_test_ : list of np.ndarray
 				The test set views.
-			- training_scores_ : np.ndarray
+			- train_scores_ : np.ndarray
 				The SGCCA scores of the training set.
 				Shape: (n_subjects, n_components).
-			- training_loadings_ : list of np.ndarray
+			- train_loadings_ : list of np.ndarray
 				The SGCCA loadings of the training set views.
 				Shape: (n_variables, n_components).
 			- test_scores_ : np.ndarray
@@ -834,7 +840,7 @@ class parallel_sgcca():
 				A tuple of two arrays representing the row and column
 				indices of the canonical correlations in the full
 				correlation matrix.
-			- training_canonical_correlations_ : np.ndarray
+			- train_canonical_correlations_ : np.ndarray
 				The canonical correlations between training set scores.
 				Shape: (n_components, n_pairwise_comparisons).
 			- test_canonical_correlations_ : np.ndarray
@@ -868,20 +874,26 @@ class parallel_sgcca():
 									l1_sparsity = l1_sparsity,
 									n_comp = n_components,
 									scheme = self.scheme).fit(self.views_train_)
-		training_scores_, training_loadings_ = mdl.transform(self.views_train_, calculate_loading = True)
-		self.training_scores_ = training_scores_
-		self.training_loadings_ = training_loadings_
+		train_scores_, train_loadings_ = mdl.transform(self.views_train_, calculate_loading = True)
+		self.train_scores_ = train_scores_
+		self.train_loadings_ = train_loadings_
 		test_scores_, test_loadings_ = mdl.transform(self.views_test_, calculate_loading = True)
 		self.test_scores_ = test_scores_
 		self.test_loadings_ = test_loadings_
 		corr_index = np.where(self.matidx_)
-		training_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
+		train_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
 		test_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
 		for c in range(n_components):
-			training_canonical_correlation[c] = np.corrcoef(model.training_scores_[:,:,c])[corr_index]
+			train_canonical_correlation[c] = np.corrcoef(model.train_scores_[:,:,c])[corr_index]
 			test_canonical_correlation[c] = np.corrcoef(model.test_scores_[:,:,c])[corr_index]
+
+		selected_variables_ = []
+		for v in range(mdl.n_views_):
+			selected_variables_.append((mdl.weights_[v] != 0)*1)
+		self.selected_variables_ = selected_variables_
+
 		self.canonical_correlations_indicies_ = corr_index
-		self.training_canonical_correlations_ = training_canonical_correlation
+		self.train_canonical_correlations_ = train_canonical_correlation
 		self.test_canonical_correlations_ = test_canonical_correlation
 		self.n_components_ = n_components
 		self.l1_sparsity_ = l1_sparsity
@@ -909,23 +921,23 @@ class parallel_sgcca():
 	def bootstrap_prediction_model(self, response_index, n_bootstraps = 10000):
 		assert hasattr(self,'model_obj_'), "Error: run fit_model"
 		# Training data
-		y = self.training_scores_[response_index]
-		y_hat = self.model_obj_.predict(self.training_scores_, response_index = response_index)
-		training_prediction_r_ = np.zeros((self.n_components_))
-		training_prediction_r_pval_ = np.zeros((self.n_components_))
+		y = self.train_scores_[response_index]
+		y_hat = self.model_obj_.predict(self.train_scores_, response_index = response_index)
+		train_prediction_r_ = np.zeros((self.n_components_))
+		train_prediction_r_pval_ = np.zeros((self.n_components_))
 		for c in range(self.n_components_):
-			training_prediction_r_[c], training_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
-		self.prediction_model_training_dependent_ = y
-		self.prediction_model_training_predicted_ = y_hat
-		self.training_prediction_r_ = training_prediction_r_
-		self.training_prediction_r_pval_ = training_prediction_r_pval_
+			train_prediction_r_[c], train_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
+		self.prediction_model_train_dependent_ = y
+		self.prediction_model_train_predicted_ = y_hat
+		self.train_prediction_r_ = train_prediction_r_
+		self.train_prediction_r_pval_ = train_prediction_r_pval_
 		if n_bootstraps is not None:
 			corr_bootstraps = self._bootstrap_correlation(y, y_hat, n_bootstraps = n_bootstraps)
 			corr_bootstraps_pval = np.sum((corr_bootstraps < 0), 0) * 2 / n_bootstraps
-			self.training_prediction_bootstraps_ = corr_bootstraps
-			self.training_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
-			self.training_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
-			self.training_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+			self.train_prediction_bootstraps_ = corr_bootstraps
+			self.train_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
+			self.train_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
+			self.train_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 		# Test data
 		y = self.test_scores_[response_index]
 		y_hat = self.model_obj_.predict(self.test_scores_, response_index = response_index)
@@ -944,28 +956,51 @@ class parallel_sgcca():
 			self.test_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
 			self.test_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
 			self.test_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
-
-
-# Candidate functions
-
-def _boostrap_loading(model, b, views, seed = None):
-	if b % 100 == 0:
-		print(b)
-	return(np.row_stack(model.model_obj_.transform(model.bootstrap_views(views, seed = seed), calculate_loading=True)[1]))
-
-def boostrap_model_loading(model, n_bootstraps = 1000):
-		seeds = generate_seeds(n_bootstraps)
-		bs_loadings = Parallel(n_jobs = 1, backend='multiprocessing')(
-					delayed(_boostrap_loading)(model = model, b = b, views = model.views_train_,
-														seed = seeds[b]) for b in range(n_bootstraps))
-		bs_loadings = np.array(bs_loadings)
-		start = 0
-		bootstrap_loadings_ = []
-		for v in range(model.n_views_):
-			stop = start + model.views_train_[v].shape[1]
-			bootstrap_loadings_.append(bs_loadings[:,start:stop,:])
-			start = stop
-		return(bootstrap_loadings_)
+	# Candidate functions
+	def bootstrap_loadings(self, dataviews, n_bootstraps = 10000):
+		def _inner_correlation_func(b, mat, n_subs, seed):
+			if seed is None:
+				np.random.seed(np.random.randint(4294967295))
+			else:
+				np.random.seed(seed)
+			return(np.corrcoef(mat[choices(np.arange(0,mat.shape[0],1), k=n_subs)].T)[1:,0])
+		datascores = self.model_obj_.transform(dataviews)
+		loadings_bootstrap_pval_ = []
+		loadings_bootstrap_CI_025_ = []
+		loadings_bootstrap_CI_975_ = []
+		for view_index in range(self.n_views_):
+			view = np.array(dataviews[view_index])
+			n_subs, n_targets = view.shape
+			bs_loading_pval = np.ones((self.model_obj_.weights_[view_index].shape))
+			bs_loading_025 = np.ones((self.model_obj_.weights_[view_index].shape))
+			bs_loading_975 = np.ones((self.model_obj_.weights_[view_index].shape))
+			for component_index in range(self.n_components_):
+				print("View[%d], Component[%d]: running %d iterations" % (view_index, component_index, n_bootstraps))
+				score = np.array(datascores[view_index,:,component_index])
+				nonzeroweightidx = self.model_obj_.weights_[view_index][:,component_index] != 0
+				mat = np.column_stack((score, view[:,nonzeroweightidx]))
+				rs = np.corrcoef(mat.T)[1:,0]
+				rs_dir = np.sign(rs)
+				rs_pos = rs * rs_dir
+				idx = np.argsort(-np.abs(rs_pos))
+				boot_rs = np.zeros((n_bootstraps, len(rs)))
+				seeds = generate_seeds(n_bootstraps)
+				boot_rs = np.array(Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+							delayed(_inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in range(n_bootstraps)))
+				boot_rs_pos = boot_rs*rs_dir
+				rs_pval = np.ones((len(rs)))
+				for e in range(len(rs)):
+					temp = np.sort(boot_rs_pos[:,e])
+					rs_pval[e] = np.divide(np.searchsorted(temp, 0), n_bootstraps)
+				bs_loading_pval[nonzeroweightidx, component_index] = rs_pval
+				bs_loading_025[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 2.5, axis = 0) * rs_dir
+				bs_loading_025[~nonzeroweightidx, component_index] = np.nan
+				bs_loading_975[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 97.5, axis = 0) * rs_dir
+				bs_loading_975[~nonzeroweightidx, component_index] = np.nan
+		loadings_bootstrap_pval_.append(bs_loading_pval)
+		loadings_bootstrap_CI_025_.append(bs_loading_025)
+		loadings_bootstrap_CI_975_.append(bs_loading_975)
+		return(loadings_bootstrap_pval_, loadings_bootstrap_CI_025_, loadings_bootstrap_CI_975_)
 
 # Plotting functions
 def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", png_basename = None, L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True):
@@ -1049,5 +1084,25 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 	# Draw the scatter plot and marginals.
 	_scatter_hist(x, y, ax, ax_histx, ax_histy, xlabel = xlabel, ylabel = ylabel)
 
-
+def plot_prediction_bootstraps(model, png_basename = None):
+	component_indices = np.arange(model.n_components_)
+	# Plot the data as a grouped errorbar plot
+	fig, ax = plt.subplots()
+	ax.scatter(model.train_prediction_bootstraps_.mean(0), component_indices - 0.1, marker='s', label='Training')
+	ax.hlines(component_indices - 0.1, model.train_prediction_bootstraps_CI_025_, model.train_prediction_bootstraps_CI_975_, color='#1f77b4')
+	ax.scatter(model.test_prediction_bootstraps_.mean(0), component_indices + 0.1, marker='s', label='Test')
+	ax.hlines(component_indices + 0.1, model.test_prediction_bootstraps_CI_025_, model.test_prediction_bootstraps_CI_975_, color='#ff7f0e')
+	ax.set_yticks(component_indices)
+	ax.set_yticklabels([f'Component {i+1}' for i in component_indices])
+	ax.set_ylabel('SGCCA Component')
+	ax.set_xlabel('Prediction (r)')
+	ax.legend()
+	ax.invert_yaxis()
+	plt.axvline(0, ls = '--', color = 'k')
+	plt.tight_layout()
+	if png_basename is not None:
+		plt.savefig("%s_bootstrap_prediction.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
 
