@@ -1036,12 +1036,11 @@ class parallel_sgcca():
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
-		print("View[%d], Component[%d]: running %d iterations" % (view_index, component_index, n_bootstraps))
 		mat = np.column_stack((score, view[:,nonzeroweightidx]))
 		rs = np.corrcoef(mat.T)[1:,0]
 		rs_dir = np.sign(rs)
 		boot_rs = np.zeros((n_bootstraps, len(rs)))
-		for b in tqdm(range(n_bootstraps)):
+		for b in range(n_bootstraps):
 			boot_rs[b]  = self._inner_correlation_func(b = b, mat = mat, n_subs = n_subs, seed = 'ignore')
 		boot_rs_pos = boot_rs*rs_dir
 		rs_pval = np.ones((len(rs)))
@@ -1091,6 +1090,7 @@ class parallel_sgcca():
 					bs_loading_975[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 97.5, axis = 0) * rs_dir
 					bs_loading_975[~nonzeroweightidx, component_index] = np.nan
 			else:
+				print("View[%d]: running %d iterations for %d components" % (view_index, n_bootstraps, self.n_components_))
 				v = view_index
 				seeds = generate_seeds(self.n_components_)
 				output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
@@ -1101,7 +1101,7 @@ class parallel_sgcca():
 																	nonzeroweightidx = self.model_obj_.weights_[v][:,c]!=0,
 																	n_subs = n_subs,
 																	n_bootstraps = n_bootstraps, 
-																	seed = seeds[c]) for c in range(self.n_components_))
+																	seed = seeds[c]) for c in tqdm(range(self.n_components_)))
 				bs_loading_pval, bs_loading_025, bs_loading_975 = zip(*output)
 				bs_loading_pval = np.array(bs_loading_pval).T
 				bs_loading_025 = np.array(bs_loading_025).T
