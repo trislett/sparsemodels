@@ -17,6 +17,8 @@ from scipy.stats import norm, chi2, pearsonr, gaussian_kde
 from scipy.linalg import pinv
 from statsmodels.stats.multitest import multipletests, fdrcorrection
 from joblib import Parallel, delayed
+from tqdm import tqdm
+from datetime import datetime
 
 from sklearn.preprocessing import scale
 from sklearn.linear_model import LinearRegression
@@ -57,6 +59,62 @@ def pickle_load_model(filename):
 	with open(filename, 'rb') as pfile:
 		model = pickle.load(pfile)
 	return(model)
+
+def stack_ones(arr):
+	"""
+	Add a column of ones to an array
+	
+	Parameters
+	----------
+	arr : array
+
+	Returns
+	---------
+	arr : array
+		array with a column of ones
+	
+	"""
+	return np.column_stack([np.ones(len(arr)),arr])
+
+def dummy_code(variable, iscontinous = False, demean = True, unit_variance = False, weight_by_sqrt_numvar = False):
+	"""
+	Dummy codes a variable
+	
+	Parameters
+	----------
+	variable : array
+		1D array variable of any type 
+
+	Returns
+	---------
+	dummy_vars : array
+		dummy coded array of shape [(# subjects), (unique variables - 1)]
+	
+	"""
+	variable = np.array(variable)
+	if iscontinous:
+		if demean:
+			variable = variable - np.mean(variable,0)
+		if unit_variance:
+			variable = variable / np.std(variable,0)
+		dummy_vars = variable
+	else:
+		unique_vars = np.unique(variable)
+		dummy_vars = []
+		for var in unique_vars:
+			temp_var = np.zeros((len(variable)))
+			temp_var[variable == var] = 1
+			dummy_vars.append(temp_var)
+		dummy_vars = np.array(dummy_vars)[1:] # remove the first column as reference variable
+		dummy_vars = np.squeeze(dummy_vars).astype(int).T
+		if demean:
+			dummy_vars = dummy_vars - np.mean(dummy_vars,0)
+		if unit_variance:
+			dummy_vars = dummy_vars / np.std(dummy_vars,0)
+		if weight_by_sqrt_numvar:
+			if dummy_vars.ndim > 1:
+				dummy_vars = np.divide(dummy_vars, np.sqrt(dummy_vars.shape[1]))
+	return dummy_vars
 
 # model assessment functions
 def r_score(y_true, y_pred, scale_data = True, multioutput = 'uniform_average'):
@@ -157,7 +215,7 @@ class sgcca_rwrapper:
 		self.penalty = "l1"
 		self.effective_zero = effective_zero
 
-	def scaleviews(self, views, centre = True, scale = True, div_sqr_numvar = True, axis = 0):
+	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0):
 		"""
 		Helper function to center and scale the views.
 
@@ -171,7 +229,7 @@ class sgcca_rwrapper:
 		scale : bool
 			A boolean that specifies whether to scale the views.
 			Default value is True.
-		div_sqr_numvar : bool
+		div_sqrt_numvar : bool
 			A boolean that specifies whether to divide the views by the square root of the number of variables.
 			Default value is True.
 		axis : int
@@ -190,7 +248,7 @@ class sgcca_rwrapper:
 				x = x - x_mean
 			if scale:
 				x = np.divide(x, x_std)
-			if div_sqr_numvar:
+			if div_sqrt_numvar:
 				x = np.divide(x, np.sqrt(x.shape[1]))
 			scaled_views.append(x)
 		return(list(scaled_views))
@@ -431,7 +489,7 @@ class sgcca_rwrapper:
 		return(yhat)
 
 class parallel_sgcca():
-	def __init__(self, n_jobs = 12, design_matrix = None, scheme = "factorial", n_permutations = 10000):
+	def __init__(self, n_jobs = 12, design_matrix = None, scheme = "centroid", n_permutations = 10000):
 		"""
 		Main SGCCA function
 		"""
@@ -693,7 +751,7 @@ class parallel_sgcca():
 																n_comp = n_comp,
 																metric_function = metric_function,
 																effective_zero = effective_zero,
-																seed = seeds[p]) for p in range(n_perm_per_block))
+																seed = seeds[p]) for p in tqdm(range(n_perm_per_block)))
 				stat_mean[c, i] = np.mean(stat)
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
@@ -706,8 +764,6 @@ class parallel_sgcca():
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
-		if p % 20 == 0:
-			print(p)
 		pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = float(l1),
 									n_comp = n_comp,
@@ -778,7 +834,7 @@ class parallel_sgcca():
 															n_comp = 1,
 															metric = metric,
 															effective_zero = effective_zero,
-															seed = seeds[p]) for p in range(n_perm_per_block))
+															seed = seeds[p]) for p in tqdm(range(n_perm_per_block)))
 			z = np.divide((t - np.mean(tstar)), np.std(tstar))
 			tmetric[i] = t
 			zstat[i] = z
@@ -884,8 +940,8 @@ class parallel_sgcca():
 		train_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
 		test_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
 		for c in range(n_components):
-			train_canonical_correlation[c] = np.corrcoef(model.train_scores_[:,:,c])[corr_index]
-			test_canonical_correlation[c] = np.corrcoef(model.test_scores_[:,:,c])[corr_index]
+			train_canonical_correlation[c] = np.corrcoef(self.train_scores_[:,:,c])[corr_index]
+			test_canonical_correlation[c] = np.corrcoef(self.test_scores_[:,:,c])[corr_index]
 
 		selected_variables_ = []
 		for v in range(mdl.n_views_):
@@ -910,7 +966,7 @@ class parallel_sgcca():
 			x1 = x1[:,np.newaxis]
 			x2 = x2[:,np.newaxis]
 			corr_bootstraps = np.zeros((n_bootstraps, 1))
-		for i in range(n_bootstraps):
+		for i in tqdm(range(n_bootstraps)):
 			indices = np.random.choice(n, size=n, replace=True)
 			x1_sample = x1[indices]
 			x2_sample = x2[indices]
@@ -956,14 +1012,25 @@ class parallel_sgcca():
 			self.test_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
 			self.test_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
 			self.test_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+
 	# Candidate functions
-	def bootstrap_loadings(self, dataviews, n_bootstraps = 10000):
-		def _inner_correlation_func(b, mat, n_subs, seed):
-			if seed is None:
-				np.random.seed(np.random.randint(4294967295))
-			else:
-				np.random.seed(seed)
-			return(np.corrcoef(mat[choices(np.arange(0,mat.shape[0],1), k=n_subs)].T)[1:,0])
+	
+	def bootstrap_model_loadings(self, n_bootstraps = 10000):
+		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_train_, n_bootstraps = n_bootstraps)
+		self.train_loadings_bootstrap_pval_ = lbs_pval_
+		self.train_loadings_bootstrap_CI_025_ = lbs_CI_025_
+		self.train_loadings_bootstrap_CI_975_ = lbs_CI_975_
+		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_test_, n_bootstraps = n_bootstraps)
+		self.test_loadings_bootstrap_pval_ = lbs_pval_
+		self.test_loadings_bootstrap_CI_025_ = lbs_CI_025_
+		self.test_loadings_bootstrap_CI_975_ = lbs_CI_975_
+	def _inner_correlation_func(self, b, mat, n_subs, seed):
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		else:
+			np.random.seed(seed)
+		return(np.corrcoef(mat[choices(np.arange(0,mat.shape[0],1), k=n_subs)].T)[1:,0])
+	def bootstrap_dataview_loadings(self, dataviews, n_bootstraps = 10000):
 		datascores = self.model_obj_.transform(dataviews)
 		loadings_bootstrap_pval_ = []
 		loadings_bootstrap_CI_025_ = []
@@ -986,7 +1053,7 @@ class parallel_sgcca():
 				boot_rs = np.zeros((n_bootstraps, len(rs)))
 				seeds = generate_seeds(n_bootstraps)
 				boot_rs = np.array(Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
-							delayed(_inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in range(n_bootstraps)))
+							delayed(self._inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in tqdm(range(n_bootstraps))))
 				boot_rs_pos = boot_rs*rs_dir
 				rs_pval = np.ones((len(rs)))
 				for e in range(len(rs)):
