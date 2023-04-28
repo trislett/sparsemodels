@@ -11,29 +11,30 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
+from joblib import Parallel, delayed
+from tqdm import tqdm
+from datetime import datetime
+from random import choices
+
 from scipy.stats import t as tdist
 from scipy.stats import f as fdist
 from scipy.stats import norm, chi2, pearsonr, gaussian_kde
 from scipy.linalg import pinv
 from statsmodels.stats.multitest import multipletests, fdrcorrection
-from joblib import Parallel, delayed
-from tqdm import tqdm
-from datetime import datetime
 
 from sklearn.preprocessing import scale
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error, mean_squared_error
-from sklearn.cross_decomposition import PLSRegression, CCA
 
 from rpy2.robjects import numpy2ri
 from rpy2.robjects.packages import importr
 # suppress console because of weird permission around r
 from rpy2.rinterface import RRuntimeWarning
-
 warnings.filterwarnings("ignore", category=RRuntimeWarning)
 warnings.filterwarnings('ignore') 
 
-from sparsemodels.cynumstats import cy_lin_lstsqr_mat_residual, cy_lin_lstsqr_mat, fast_se_of_slope
+# cython functions
+from sparsemodels.cynumstats import cy_lin_lstsqr_mat
 
 stats = importr('stats')
 base = importr('base')
@@ -273,7 +274,7 @@ class sgcca_rwrapper:
 			final_values[i] = np.array(robj[i])[-1]
 		return(final_values)
 
-	def check_sparsity(self):
+	def check_sparsity(self, verbose = True):
 		"""
 		Checks if l1_sparsity is valid and adjusts it if necessary.
 		"""
@@ -282,10 +283,11 @@ class sgcca_rwrapper:
 			sparsity = self.l1_sparsity[v]
 			if sparsity < sthrehold:
 				nsparsity = np.round(np.round(sthrehold, 4) + 0.0001, 4)
-				print("Sparsity of view[%d] is too low. Adjusting to new value = %1.4f" %(int(v), nsparsity))
+				if verbose:
+					print("Sparsity of view[%d] is too low. Adjusting to new value = %1.4f" %(int(v), nsparsity))
 				self.l1_sparsity[v] = nsparsity
 
-	def fit(self, X):
+	def fit(self, X, verbose = True):
 		"""
 		Fits the model for the given views.
 		
@@ -317,7 +319,7 @@ class sgcca_rwrapper:
 			self.n_comp = np.repeat(self.n_comp, self.n_views_)
 		if self.scale:
 			self.views_ = self.scaleviews(self.views_)
-		self.check_sparsity()
+		self.check_sparsity(verbose = verbose)
 		
 		numpy2ri.activate()
 		fit = rgcca.sgcca(A = self.views_, 
@@ -771,7 +773,7 @@ class parallel_sgcca():
 									scale = True,
 									init = "svd",
 									bias = True,
-									effective_zero = float(effective_zero)).fit(self.permute_views(views))
+									effective_zero = float(effective_zero)).fit(self.permute_views(views), verbose = False)
 		if metric == 'fisherz_transformation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
@@ -979,39 +981,39 @@ class parallel_sgcca():
 		# Training data
 		y = self.train_scores_[response_index]
 		y_hat = self.model_obj_.predict(self.train_scores_, response_index = response_index)
-		train_prediction_r_ = np.zeros((self.n_components_))
-		train_prediction_r_pval_ = np.zeros((self.n_components_))
+		prediction_train_r_ = np.zeros((self.n_components_))
+		prediction_train_r_pval_ = np.zeros((self.n_components_))
 		for c in range(self.n_components_):
-			train_prediction_r_[c], train_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
-		self.prediction_model_train_dependent_ = y
-		self.prediction_model_train_predicted_ = y_hat
-		self.train_prediction_r_ = train_prediction_r_
-		self.train_prediction_r_pval_ = train_prediction_r_pval_
+			prediction_train_r_[c], prediction_train_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
+		self.prediction_model_train_y_ = y
+		self.prediction_model_train_yhat_ = y_hat
+		self.prediction_train_r_ = prediction_train_r_
+		self.prediction_train_r_pval_ = prediction_train_r_pval_
 		if n_bootstraps is not None:
 			corr_bootstraps = self._bootstrap_correlation(y, y_hat, n_bootstraps = n_bootstraps)
 			corr_bootstraps_pval = np.sum((corr_bootstraps < 0), 0) * 2 / n_bootstraps
-			self.train_prediction_bootstraps_ = corr_bootstraps
-			self.train_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
-			self.train_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
-			self.train_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+			self.prediction_train_bootstraps_ = corr_bootstraps
+			self.prediction_train_bootstraps_pvalue_ =  corr_bootstraps_pval
+			self.prediction_train_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
+			self.prediction_train_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 		# Test data
 		y = self.test_scores_[response_index]
 		y_hat = self.model_obj_.predict(self.test_scores_, response_index = response_index)
-		test_prediction_r_ = np.zeros((self.n_components_))
-		test_prediction_r_pval_ = np.zeros((self.n_components_))
+		prediction_test_r_ = np.zeros((self.n_components_))
+		prediction_test_r_pval_ = np.zeros((self.n_components_))
 		for c in range(self.n_components_):
-			test_prediction_r_[c], test_prediction_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
-		self.prediction_model_test_dependent_ = y
-		self.prediction_self_test_predicted_ = y_hat
-		self.test_prediction_r_ = test_prediction_r_
-		self.test_prediction_r_pval_ = test_prediction_r_pval_
+			prediction_test_r_[c], prediction_test_r_pval_[c] = pearsonr(y[:, c], y_hat[:, c])
+		self.prediction_model_test_y_ = y
+		self.prediction_model_test_yhat_ = y_hat
+		self.prediction_test_r_ = prediction_test_r_
+		self.prediction_test_r_pval_ = prediction_test_r_pval_
 		if n_bootstraps is not None:
 			corr_bootstraps = self._bootstrap_correlation(y, y_hat, n_bootstraps = n_bootstraps)
 			corr_bootstraps_pval = np.sum((corr_bootstraps < 0), 0) * 2 / n_bootstraps
-			self.test_prediction_bootstraps_ = corr_bootstraps
-			self.test_prediction_bootstraps_pvalue_ =  corr_bootstraps_pval
-			self.test_prediction_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
-			self.test_prediction_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
+			self.prediction_test_bootstraps_ = corr_bootstraps
+			self.prediction_test_bootstraps_pvalue_ =  corr_bootstraps_pval
+			self.prediction_test_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
+			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
 	
@@ -1155,10 +1157,10 @@ def plot_prediction_bootstraps(model, png_basename = None):
 	component_indices = np.arange(model.n_components_)
 	# Plot the data as a grouped errorbar plot
 	fig, ax = plt.subplots()
-	ax.scatter(model.train_prediction_bootstraps_.mean(0), component_indices - 0.1, marker='s', label='Training')
-	ax.hlines(component_indices - 0.1, model.train_prediction_bootstraps_CI_025_, model.train_prediction_bootstraps_CI_975_, color='#1f77b4')
-	ax.scatter(model.test_prediction_bootstraps_.mean(0), component_indices + 0.1, marker='s', label='Test')
-	ax.hlines(component_indices + 0.1, model.test_prediction_bootstraps_CI_025_, model.test_prediction_bootstraps_CI_975_, color='#ff7f0e')
+	ax.scatter(model.prediction_train_bootstraps_.mean(0), component_indices - 0.1, marker='s', label='Training')
+	ax.hlines(component_indices - 0.1, model.prediction_train_bootstraps_CI_025_, model.prediction_train_bootstraps_CI_975_, color='#1f77b4')
+	ax.scatter(model.prediction_test_bootstraps_.mean(0), component_indices + 0.1, marker='s', label='Test')
+	ax.hlines(component_indices + 0.1, model.prediction_test_bootstraps_CI_025_, model.prediction_test_bootstraps_CI_975_, color='#ff7f0e')
 	ax.set_yticks(component_indices)
 	ax.set_yticklabels([f'Component {i+1}' for i in component_indices])
 	ax.set_ylabel('SGCCA Component')
