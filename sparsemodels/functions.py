@@ -24,7 +24,7 @@ from statsmodels.stats.multitest import multipletests, fdrcorrection
 
 from sklearn.preprocessing import scale
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error
 
 from rpy2.robjects import numpy2ri
 from rpy2.robjects.packages import importr
@@ -165,7 +165,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, effective_zero = sys.float_info.epsilon):
+	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "factorial", scale = True, init = "svd", bias = True, effective_zero = sys.float_info.epsilon):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -182,7 +182,7 @@ class sgcca_rwrapper:
 			Default value is 1 for all views. It is possible set a different number of components for each dataview
 		scheme : str
 			A string that specifies the algorithm used to solve the optimization problem.
-			Scheme options are "horst", "factorial" or "centroid" (Default: "centroid")
+			Scheme options are "horst", "factorial" or "centroid" (Default: "factorial")
 			Horst scheme g(x) = x
 				Penalizes structural negative correlation between components
 			Centroid scheme g(x) = |x|
@@ -401,10 +401,8 @@ class sgcca_rwrapper:
 				2d array scores with shape (n_subjects, n_components)
 		"""
 		assert view.shape[1] == self.views_[view_index].shape[1], "Error: the input view and model view_index must have the same number variables"
-		X = self.scaleviews((list([view]))[0])
-		scores = []
-		for v in range(self.n_views_):
-			scores.append(np.dot(views[X], self.weights_[v]))
+		X = self.scaleviews(view)
+		scores = np.dot(X, self.weights_[view_index])
 		scores = np.array(scores)
 		return(scores)
 
@@ -736,7 +734,6 @@ class parallel_sgcca():
 		# For the future, use groups.
 		
 		views_train = self.subsetviews(views, self.train_index_)
-		n_views = len(views_train)
 		n_subs = views_train[0].shape[0]
 		split = int(n_subs*split_test_ratio)
 		stat_mean = np.zeros((len(l1_range), len(n_component_range)))
@@ -790,7 +787,7 @@ class parallel_sgcca():
 			pstat = np.sum(pmdl.crit)
 		return(pstat)
 
-	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', effective_zero = 1e-4, verbose = True):
+	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', effective_zero = 1e-3, verbose = True):
 		"""
 		Parameters
 		----------
@@ -806,7 +803,6 @@ class parallel_sgcca():
 		self._check_design_matrix(len(views))
 		
 		views_train = self.subsetviews(views, self.train_index_)
-		n_views = len(views_train)
 		zstat = np.zeros_like(l1_range)
 		tmetric = np.zeros_like(l1_range)
 		tstar_blocks = np.zeros((len(l1_range), n_perm_per_block))
@@ -1026,13 +1022,42 @@ class parallel_sgcca():
 		self.test_loadings_bootstrap_pval_ = lbs_pval_
 		self.test_loadings_bootstrap_CI_025_ = lbs_CI_025_
 		self.test_loadings_bootstrap_CI_975_ = lbs_CI_975_
+
 	def _inner_correlation_func(self, b, mat, n_subs, seed):
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		elif seed == 'ignore':
+			pass
+		else:
+			np.random.seed(seed)
+		return(np.corrcoef(mat[choices(np.arange(0,mat.shape[0],1), k=n_subs)].T)[1:,0])
+	def _outer_correlation_func(self, view_index, component_index, score, view, nonzeroweightidx, n_subs, n_bootstraps, seed):
 		if seed is None:
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
-		return(np.corrcoef(mat[choices(np.arange(0,mat.shape[0],1), k=n_subs)].T)[1:,0])
-	def bootstrap_dataview_loadings(self, dataviews, n_bootstraps = 10000):
+		print("View[%d], Component[%d]: running %d iterations" % (view_index, component_index, n_bootstraps))
+		mat = np.column_stack((score, view[:,nonzeroweightidx]))
+		rs = np.corrcoef(mat.T)[1:,0]
+		rs_dir = np.sign(rs)
+		boot_rs = np.zeros((n_bootstraps, len(rs)))
+		for b in tqdm(range(n_bootstraps)):
+			boot_rs[b]  = self._inner_correlation_func(b = b, mat = mat, n_subs = n_subs, seed = 'ignore')
+		boot_rs_pos = boot_rs*rs_dir
+		rs_pval = np.ones((len(rs)))
+		for e in range(len(rs)):
+			temp = np.sort(boot_rs_pos[:,e])
+			rs_pval[e] = np.divide(np.searchsorted(temp, 0), n_bootstraps)
+		bs_loading_pval = np.ones((len(nonzeroweightidx)))
+		bs_loading_025 = np.ones((len(nonzeroweightidx)))
+		bs_loading_975 = np.ones((len(nonzeroweightidx)))
+		bs_loading_pval[nonzeroweightidx] = rs_pval
+		bs_loading_025[nonzeroweightidx] = np.percentile(boot_rs_pos, 2.5, axis = 0) * rs_dir
+		bs_loading_025[~nonzeroweightidx] = np.nan
+		bs_loading_975[nonzeroweightidx] = np.percentile(boot_rs_pos, 97.5, axis = 0) * rs_dir
+		bs_loading_975[~nonzeroweightidx] = np.nan
+		return(bs_loading_pval, bs_loading_025, bs_loading_975)
+	def bootstrap_dataview_loadings(self, dataviews, n_bootstraps = 10000, parallel_use_inner = False):
 		datascores = self.model_obj_.transform(dataviews)
 		loadings_bootstrap_pval_ = []
 		loadings_bootstrap_CI_025_ = []
@@ -1043,32 +1068,47 @@ class parallel_sgcca():
 			bs_loading_pval = np.ones((self.model_obj_.weights_[view_index].shape))
 			bs_loading_025 = np.ones((self.model_obj_.weights_[view_index].shape))
 			bs_loading_975 = np.ones((self.model_obj_.weights_[view_index].shape))
-			for component_index in range(self.n_components_):
-				print("View[%d], Component[%d]: running %d iterations" % (view_index, component_index, n_bootstraps))
-				score = np.array(datascores[view_index,:,component_index])
-				nonzeroweightidx = self.model_obj_.weights_[view_index][:,component_index] != 0
-				mat = np.column_stack((score, view[:,nonzeroweightidx]))
-				rs = np.corrcoef(mat.T)[1:,0]
-				rs_dir = np.sign(rs)
-				rs_pos = rs * rs_dir
-				idx = np.argsort(-np.abs(rs_pos))
-				boot_rs = np.zeros((n_bootstraps, len(rs)))
-				seeds = generate_seeds(n_bootstraps)
-				boot_rs = np.array(Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
-							delayed(self._inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in tqdm(range(n_bootstraps))))
-				boot_rs_pos = boot_rs*rs_dir
-				rs_pval = np.ones((len(rs)))
-				for e in range(len(rs)):
-					temp = np.sort(boot_rs_pos[:,e])
-					rs_pval[e] = np.divide(np.searchsorted(temp, 0), n_bootstraps)
-				bs_loading_pval[nonzeroweightidx, component_index] = rs_pval
-				bs_loading_025[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 2.5, axis = 0) * rs_dir
-				bs_loading_025[~nonzeroweightidx, component_index] = np.nan
-				bs_loading_975[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 97.5, axis = 0) * rs_dir
-				bs_loading_975[~nonzeroweightidx, component_index] = np.nan
-		loadings_bootstrap_pval_.append(bs_loading_pval)
-		loadings_bootstrap_CI_025_.append(bs_loading_025)
-		loadings_bootstrap_CI_975_.append(bs_loading_975)
+			if parallel_use_inner:
+				for component_index in range(self.n_components_):
+					print("View[%d], Component[%d]: running %d iterations" % (view_index, component_index, n_bootstraps))
+					score = np.array(datascores[view_index,:,component_index])
+					nonzeroweightidx = self.model_obj_.weights_[view_index][:,component_index] != 0
+					mat = np.column_stack((score, view[:,nonzeroweightidx]))
+					rs = np.corrcoef(mat.T)[1:,0]
+					rs_dir = np.sign(rs)
+					boot_rs = np.zeros((n_bootstraps, len(rs)))
+					seeds = generate_seeds(n_bootstraps)
+					boot_rs = np.array(Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+								delayed(self._inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in tqdm(range(n_bootstraps))))
+					boot_rs_pos = boot_rs*rs_dir
+					rs_pval = np.ones((len(rs)))
+					for e in range(len(rs)):
+						temp = np.sort(boot_rs_pos[:,e])
+						rs_pval[e] = np.divide(np.searchsorted(temp, 0), n_bootstraps)
+					bs_loading_pval[nonzeroweightidx, component_index] = rs_pval
+					bs_loading_025[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 2.5, axis = 0) * rs_dir
+					bs_loading_025[~nonzeroweightidx, component_index] = np.nan
+					bs_loading_975[nonzeroweightidx, component_index] = np.percentile(boot_rs_pos, 97.5, axis = 0) * rs_dir
+					bs_loading_975[~nonzeroweightidx, component_index] = np.nan
+			else:
+				v = view_index
+				seeds = generate_seeds(self.n_components_)
+				output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+							delayed(self._outer_correlation_func)(view_index = v,
+																	component_index = c,
+																	score = np.array(datascores[v,:,c]),
+																	view = view,
+																	nonzeroweightidx = self.model_obj_.weights_[v][:,c]!=0,
+																	n_subs = n_subs,
+																	n_bootstraps = n_bootstraps, 
+																	seed = seeds[c]) for c in range(self.n_components_))
+				bs_loading_pval, bs_loading_025, bs_loading_975 = zip(*output)
+				bs_loading_pval = np.array(bs_loading_pval).T
+				bs_loading_025 = np.array(bs_loading_025).T
+				bs_loading_975 = np.array(bs_loading_975).T
+			loadings_bootstrap_pval_.append(bs_loading_pval)
+			loadings_bootstrap_CI_025_.append(bs_loading_025)
+			loadings_bootstrap_CI_975_.append(bs_loading_975)
 		return(loadings_bootstrap_pval_, loadings_bootstrap_CI_025_, loadings_bootstrap_CI_975_)
 
 # Plotting functions
@@ -1126,7 +1166,6 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 		sns.regplot(x = x, y = y, ax = ax)
 		x0,x1 = ax.get_xlim()
 		y0,y1 = ax.get_ylim()
-		binwidth = 0.01
 		ax_histx.hist(x, bins=np.arange(x0, x1, x.var()*2), density=True)
 		xs_ = np.linspace(x0, x1, 301)
 		kde = gaussian_kde(x)
