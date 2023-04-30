@@ -117,6 +117,28 @@ def dummy_code(variable, iscontinous = False, demean = True, unit_variance = Fal
 				dummy_vars = np.divide(dummy_vars, np.sqrt(dummy_vars.shape[1]))
 	return dummy_vars
 
+def gram_schmidt_orthonormalize(X, columns=True):
+	"""
+	Performs Gram-Schmidt orthogonalization on the input matrix X.
+	If columns is True, the columns of X are orthogonalized; if False, the rows are.
+	Returns the orthonormal matrix Q.
+	"""
+	if columns:
+		Q, _ = np.linalg.qr(X)
+	else:
+		Q, _ = np.linalg.qr(X.T)
+		Q = Q.T
+	return(Q)
+
+def orthonormal_projection(w):
+	"""
+	Finds the projection matrix onto the subspace spanned by the columns of w.
+	Returns the orthonormal matrix representing the projection.
+	"""
+	return w.dot(np.linalg.inv(np.linalg.sqrtm(w.T.dot(w))))
+
+
+
 # model assessment functions
 def r_score(y_true, y_pred, scale_data = True, multioutput = 'uniform_average'):
 	"""
@@ -315,6 +337,8 @@ class sgcca_rwrapper:
 			self.l1_sparsity = np.repeat(1., self.n_views_)
 		if np.isscalar(self.l1_sparsity):
 			self.l1_sparsity = np.repeat(self.l1_sparsity, self.n_views_)
+		if self.l1_sparsity.shape != (np.max(self.n_comp), self.n_views_):
+			self.l1_sparsity = np.tile(self.l1_sparsity, np.max(self.n_comp)).reshape(np.max(self.n_comp), self.n_views_)
 		if np.isscalar(self.n_comp):
 			self.n_comp = np.repeat(self.n_comp, self.n_views_)
 		if self.scale:
@@ -324,7 +348,7 @@ class sgcca_rwrapper:
 		numpy2ri.activate()
 		fit = rgcca.sgcca(A = self.views_, 
 							C = self.design_matrix,
-							c1 = np.tile(self.l1_sparsity, np.max(self.n_comp)).reshape(np.max(self.n_comp), self.n_views_),
+							c1 = self.l1_sparsity,
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
@@ -1014,10 +1038,12 @@ class parallel_sgcca():
 	# Candidate functions
 	
 	def bootstrap_model_loadings(self, n_bootstraps = 10000):
+		print("[Training Data]")
 		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_train_, n_bootstraps = n_bootstraps)
 		self.train_loadings_bootstrap_pval_ = lbs_pval_
 		self.train_loadings_bootstrap_CI_025_ = lbs_CI_025_
 		self.train_loadings_bootstrap_CI_975_ = lbs_CI_975_
+		print("[Training Data]")
 		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_test_, n_bootstraps = n_bootstraps)
 		self.test_loadings_bootstrap_pval_ = lbs_pval_
 		self.test_loadings_bootstrap_CI_025_ = lbs_CI_025_
@@ -1061,7 +1087,7 @@ class parallel_sgcca():
 		loadings_bootstrap_pval_ = []
 		loadings_bootstrap_CI_025_ = []
 		loadings_bootstrap_CI_975_ = []
-		for view_index in range(self.n_views_):
+		for view_index in tqdm(range(self.n_views_)):
 			view = np.array(dataviews[view_index])
 			n_subs, n_targets = view.shape
 			bs_loading_pval = np.ones((self.model_obj_.weights_[view_index].shape))
@@ -1078,7 +1104,7 @@ class parallel_sgcca():
 					boot_rs = np.zeros((n_bootstraps, len(rs)))
 					seeds = generate_seeds(n_bootstraps)
 					boot_rs = np.array(Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
-								delayed(self._inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in tqdm(range(n_bootstraps))))
+								delayed(self._inner_correlation_func)(b = b, mat = mat, n_subs = n_subs, seed = seeds[b]) for b in range(n_bootstraps)))
 					boot_rs_pos = boot_rs*rs_dir
 					rs_pval = np.ones((len(rs)))
 					for e in range(len(rs)):
@@ -1101,7 +1127,7 @@ class parallel_sgcca():
 																	nonzeroweightidx = self.model_obj_.weights_[v][:,c]!=0,
 																	n_subs = n_subs,
 																	n_bootstraps = n_bootstraps, 
-																	seed = seeds[c]) for c in tqdm(range(self.n_components_)))
+																	seed = seeds[c]) for c in range(self.n_components_))
 				bs_loading_pval, bs_loading_025, bs_loading_975 = zip(*output)
 				bs_loading_pval = np.array(bs_loading_pval).T
 				bs_loading_025 = np.array(bs_loading_025).T
