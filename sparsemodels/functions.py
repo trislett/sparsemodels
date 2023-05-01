@@ -336,6 +336,11 @@ class sgcca_rwrapper:
 		# set scheme = "factorial"
 		if self.design_matrix is None:
 			self.design_matrix = 1 - np.identity(self.n_views_)
+		matidx = np.array(self.design_matrix, bool)
+		matidx[np.tril_indices(self.n_views_)] = False
+		self.matidx_ = matidx
+		self.canonical_correlations_indicies_ = np.where(self.matidx_)
+
 		# l1 contraints to the outer weights ranging from 1/sqrt(view[j].shape[1]) to 1. i.e., 1 / sqrt(nvars) per data view is the minimum sparsity.
 		if self.l1_sparsity is None:
 			self.l1_sparsity = np.repeat(1., self.n_views_)
@@ -515,6 +520,61 @@ class sgcca_rwrapper:
 				print("Component [%d] R2(score) = %1.3f" % (int(i+1), R2score))
 			yhat[:, i] = reg.predict(X_)
 		return(yhat)
+
+	def calculate_average_variance_explained(self, views, use_gram_schmidt_orthonormalize = False):
+		"""
+		Computes the average variance explained (AVE) for a given set of views.
+		AVE is a measure of the proportion of variance of the original data explained
+		by a set of components. It is used to evaluate the quality of a multi-view model.
+		
+		Parameters:
+		-----------
+		views : list of arrays, shape = [n_views, n_samples, n_features]
+			The views for which to compute AVE.
+		use_gram_schmidt_orthonormalize : bool, optional (default=False)
+			Whether to orthonormalize the scores if they are correlated.
+		
+		Returns:
+		--------
+		AVE_views_ : array, shape = [n_views, n_components]
+			The AVE of each view.
+		AVE_outer_ : array, shape = [n_components]
+			The AVE of the outer model, which is a global indicator of model quality.
+		AVE_innermodel : array, shape = [n_components]
+			The AVE of the inner model, which is the average correlation between blocks.
+		"""
+		assert len(views) == len(self.views_), "Error: The length of views and does not match model's number of views."
+		scores, loadings = self.transform(views, calculate_loading=True, outer=False)
+		# Orthonormalize the scores if they are correlated.
+		# Q = gram_schmidt_orthonormalize(score)
+		# I = Q.T@Q
+		# np.allclose(np.identity(score.shape[1]), np.round(I,8))
+		if use_gram_schmidt_orthonormalize:
+			for v in range(self.n_views_):
+				scores[v] = gram_schmidt_orthonormalize(scores[v])
+		
+		# Compute AVE for each view
+		AVE_views_ = np.zeros((self.n_views_, self.n_comp))
+		for v in range(self.n_views_):
+			AVE_views_[v] = np.mean((np.square(loadings[v])), 0)
+		
+		# Compute AVE for the outer model, which is a global indicator of model quality
+		n_vars_ = np.zeros((self.n_views_))
+		for v in range(self.n_views_):
+			n_vars_[v] = views[v].shape[1]
+		AVE_outer_ = np.zeros((self.n_views_, self.n_comp))
+		for v in range(self.n_views_):
+			AVE_outer_[v] = np.mean((np.square(loadings[v])), 0) * n_vars_[v]
+		AVE_outer_ /= n_vars_.sum()
+		AVE_outer_ = AVE_outer_.sum(0)
+		
+		# Compute AVE for the inner model, which is the average correlation between blocks
+		canonical_correlation = np.zeros((self.n_comp, len(self.canonical_correlations_indicies_[0])))
+		for c in range(self.n_comp):
+			canonical_correlation[c] = np.corrcoef(scores[:,:,c])[self.canonical_correlations_indicies_]
+		AVE_innermodel = (canonical_correlation**2).mean(1)
+		
+		return(AVE_views_, AVE_outer_, AVE_innermodel)
 
 
 class parallel_sgcca():
@@ -1039,62 +1099,6 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_pvalue_ =  corr_bootstraps_pval
 			self.prediction_test_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
-
-	def calculate_average_variance_explained(self, views, use_gram_schmidt_orthonormalize = False):
-		"""
-		Computes the average variance explained (AVE) for a given set of views.
-		AVE is a measure of the proportion of variance of the original data explained
-		by a set of components. It is used to evaluate the quality of a multi-view model.
-		
-		Parameters:
-		-----------
-		views : list of arrays, shape = [n_views, n_samples, n_features]
-			The views for which to compute AVE.
-		use_gram_schmidt_orthonormalize : bool, optional (default=False)
-			Whether to orthonormalize the scores if they are correlated.
-		
-		Returns:
-		--------
-		AVE_views_ : array, shape = [n_views, n_components]
-			The AVE of each view.
-		AVE_outer_ : array, shape = [n_components]
-			The AVE of the outer model, which is a global indicator of model quality.
-		AVE_innermodel : array, shape = [n_components]
-			The AVE of the inner model, which is the average correlation between blocks.
-		"""
-		scores, loadings = self.model_obj_.transform(views, calculate_loading=True, outer=False)
-		n_components_ = np.max(self.model_obj_.n_comp)
-		# Orthonormalize the scores if they are correlated.
-		# Q = gram_schmidt_orthonormalize(score)
-		# I = Q.T@Q
-		# np.allclose(np.identity(score.shape[1]), np.round(I,8))
-		if use_gram_schmidt_orthonormalize:
-			for v in range(self.n_views_):
-				scores[v] = gram_schmidt_orthonormalize(scores[v])
-		
-		# Compute AVE for each view
-		AVE_views_ = np.zeros((self.n_views_, self.n_components_))
-		for v in range(self.n_views_):
-			AVE_views_[v] = np.mean((np.square(loadings[v])), 0)
-		
-		# Compute AVE for the outer model, which is a global indicator of model quality
-		n_vars_ = np.zeros((self.n_views_))
-		for v in range(self.n_views_):
-			n_vars_[v] = views[v].shape[1]
-		AVE_outer_ = np.zeros((self.n_views_, self.n_components_))
-		for v in range(self.n_views_):
-			AVE_outer_[v] = np.mean((np.square(loadings[v])), 0) * n_vars_[v]
-		AVE_outer_ /= n_vars_.sum()
-		AVE_outer_ = AVE_outer_.sum(0)
-		
-		# Compute AVE for the inner model, which is the average correlation between blocks
-		canonical_correlation = np.zeros((self.n_components_, len(self.canonical_correlations_indicies_[0])))
-		for c in range(self.n_components_):
-			canonical_correlation[c] = np.corrcoef(scores[:,:,c])[self.canonical_correlations_indicies_]
-		AVE_innermodel = (canonical_correlation**2).mean(1)
-		
-		return(AVE_views_, AVE_outer_, AVE_innermodel)
-
 
 	# Candidate functions
 	
