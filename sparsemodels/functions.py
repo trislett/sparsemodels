@@ -545,6 +545,7 @@ class sgcca_rwrapper:
 		"""
 		assert len(views) == len(self.views_), "Error: The length of views and does not match model's number of views."
 		scores, loadings = self.transform(views, calculate_loading=True, outer=False)
+		n_comp = np.max(self.n_comp)
 		# Orthonormalize the scores if they are correlated.
 		# Q = gram_schmidt_orthonormalize(score)
 		# I = Q.T@Q
@@ -554,7 +555,7 @@ class sgcca_rwrapper:
 				scores[v] = gram_schmidt_orthonormalize(scores[v])
 		
 		# Compute AVE for each view
-		AVE_views_ = np.zeros((self.n_views_, self.n_comp))
+		AVE_views_ = np.zeros((self.n_views_, n_comp))
 		for v in range(self.n_views_):
 			AVE_views_[v] = np.mean((np.square(loadings[v])), 0)
 		
@@ -562,15 +563,15 @@ class sgcca_rwrapper:
 		n_vars_ = np.zeros((self.n_views_))
 		for v in range(self.n_views_):
 			n_vars_[v] = views[v].shape[1]
-		AVE_outer_ = np.zeros((self.n_views_, self.n_comp))
+		AVE_outer_ = np.zeros((self.n_views_, n_comp))
 		for v in range(self.n_views_):
 			AVE_outer_[v] = np.mean((np.square(loadings[v])), 0) * n_vars_[v]
 		AVE_outer_ /= n_vars_.sum()
 		AVE_outer_ = AVE_outer_.sum(0)
 		
 		# Compute AVE for the inner model, which is the average correlation between blocks
-		canonical_correlation = np.zeros((self.n_comp, len(self.canonical_correlations_indicies_[0])))
-		for c in range(self.n_comp):
+		canonical_correlation = np.zeros((n_comp, len(self.canonical_correlations_indicies_[0])))
+		for c in range(n_comp):
 			canonical_correlation[c] = np.corrcoef(scores[:,:,c])[self.canonical_correlations_indicies_]
 		AVE_innermodel = (canonical_correlation**2).mean(1)
 		
