@@ -137,7 +137,14 @@ def orthonormal_projection(w):
 	"""
 	return w.dot(np.linalg.inv(np.linalg.sqrtm(w.T.dot(w))))
 
-
+def cumulative_sum_of_array(arr):
+	"""
+	Cumulatively sums values of an array and returns an array of the same shape.
+	"""
+	cumulative_arr = np.zeros((arr.shape))
+	for i in range(len(arr)):
+		cumulative_arr[i] = np.sum(arr[:(i+1)], axis = 0)
+	return(cumulative_arr)
 
 # model assessment functions
 def r_score(y_true, y_pred, scale_data = True, multioutput = 'uniform_average'):
@@ -187,7 +194,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "factorial", scale = True, init = "svd", bias = True, effective_zero = sys.float_info.epsilon):
+	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, tol = sys.float_info.epsilon):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -204,7 +211,7 @@ class sgcca_rwrapper:
 			Default value is 1 for all views. It is possible set a different number of components for each dataview
 		scheme : str
 			A string that specifies the algorithm used to solve the optimization problem.
-			Scheme options are "horst", "factorial" or "centroid" (Default: "factorial")
+			Scheme options are "horst", "factorial" or "centroid" (Default: "centroid")
 			Horst scheme g(x) = x
 				Penalizes structural negative correlation between components
 			Centroid scheme g(x) = |x|
@@ -220,8 +227,8 @@ class sgcca_rwrapper:
 		bias : bool
 			A boolean that specifies whether to include a bias term in the optimization problem.
 			Default value is True.
-		effective_zero : float
-			A float that specifies a small value to use as an effective zero.
+		tol : float
+			A float that specifies the tolerance at which the model has converged. Currently set to float epsilon (smallest possible difference between floating-point numbers). 1e-12 may be more reasonable.
 
 		Returns:
 		--------
@@ -236,7 +243,7 @@ class sgcca_rwrapper:
 		self.init = init
 		self.bias = bias
 		self.penalty = "l1"
-		self.effective_zero = effective_zero
+		self.tol = tol
 
 	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0):
 		"""
@@ -363,7 +370,7 @@ class sgcca_rwrapper:
 							scale = False,
 							init = self.init,
 							bias = self.bias,
-							tol = self.effective_zero,
+							tol = self.tol,
 							verbose  = False)
 		numpy2ri.deactivate()
 		
@@ -577,6 +584,24 @@ class sgcca_rwrapper:
 		
 		return(AVE_views_, AVE_outer_, AVE_innermodel)
 
+	def _covariance_criteria(self, scores, bias=True):
+		"""
+		Helper function to outputs the final criteria from scores. This is useful for cross-validation.
+		"""
+		_, n, n_comp = scores.shape
+		if bias:
+			b = np.divide((n-1), n)
+		else:
+			b = 1
+		crit = np.zeros((n_comp))
+		for c in range(n_comp):
+			if self.scheme == 'centroid':
+				crit[c] = b * np.sum(np.abs(np.cov(scores[:,:,c]))[self.design_matrix == 1])
+			elif self.scheme == 'factorial':
+				crit[c] = b * np.sum(np.square(np.cov(scores[:,:,c]))[self.design_matrix == 1])
+			else:
+				crit[c] = b * np.sum(np.cov(scores[:,:,c])[self.design_matrix == 1])
+		return(crit)
 
 class parallel_sgcca():
 	def __init__(self, n_jobs = 12, design_matrix = None, scheme = "centroid", n_permutations = 10000):
@@ -793,10 +818,54 @@ class parallel_sgcca():
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
 
-	def _prediction_mccv(self, p, views, train_index, l1, split, n_comp = 1, metric_function = regression_metric_function(metric = 'r2_score'), effective_zero = 1e-3, seed = None):
+	def _prediction_mccv(self, p, views, train_index, l1, split, n_comp = 1, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3, seed = None):
 		"""
+		Perform a single iteration of Monte Carlo cross-validation (MCCV).
+
+		Parameters:
+		-----------
+		p : int
+			Index of the current permutation.
+		views : list of arrays
+			List of views.
+		train_index : array
+			Indices for the training set.
+		l1 : float
+			L1 sparsity parameter for sGCCA.
+		split : int
+			Size of the test set.
+		n_comp : int, optional
+			Number of components to extract. Default is 1.
+		metric_function : function, optional
+			Function for computing the evaluation metric. Default is r2_score.
+		tol : float, optional
+			Tolerance for stopping criterion. Default is 1e-3.
+		seed : int, optional
+			Seed for random number generator. Default is None.
+
+		Returns:
+		--------
+		float
+		The evaluation metric score for the current permutation.
 		"""
 		def _mccvsplit(indices, split, seed = None):
+			"""
+			Helper function to split indices for Monte Carlo cross-validation.
+
+			Parameters:
+			-----------
+			indices : array
+				Array of indices to split.
+			split : int
+				Size of the test set.
+			seed : int, optional
+				Seed for random number generator. Default is None.
+
+			Returns:
+			--------
+			array, array
+				Training and test indices.
+			"""
 			if seed is None:
 				np.random.seed(np.random.randint(4294967295))
 			else:
@@ -810,13 +879,37 @@ class parallel_sgcca():
 									l1_sparsity = l1,
 									n_comp = n_comp,
 									scheme = self.scheme,
-									effective_zero = effective_zero).fit(mtrain)
+									tol = tol).fit(mtrain)
 		mscoretest = mfit.transform(mtest)
 		return(r2_score(mscoretest[0], mfit.predict(mscoretest, 0, verbose = False)))
 
-	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1),n_component_range = np.arange(1,11,1), n_perm_per_block = 200, split_test_ratio = 0.2, metric_function = regression_metric_function(metric = 'r2_score'), effective_zero = 1e-3):
+	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1),n_component_range = np.arange(1,11,1), n_perm_per_block = 200, split_test_ratio = 0.2, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3):
 		"""
 		Montecarlo cross-validation
+
+		Parameters:
+		-----------
+		views : list of numpy arrays
+			List of views for each subject. Each numpy array should have shape (n_samples, n_features).
+		l1_range : numpy array, default=np.arange(0.1,1.1,.1)
+			Array of L1 regularization values to test.
+		n_component_range : numpy array, default=np.arange(1,11,1)
+			Array of SGCCA component values to test.
+		n_perm_per_block : int, default=200
+			Number of permutations per block.
+		split_test_ratio : float, default=0.2
+			Ratio of subjects to hold out for testing.
+		metric_function : function, default=regression_metric_function(metric='r2_score')
+			Metric function to evaluate the model. Default is 'r2_score'.
+		tol : float, default=1e-3
+			Tolerance for convergence.
+		
+		Returns:
+		--------
+		stat_mean : np.ndarray
+			Array of mean metric values across all permutations, with shape (len(n_component_range), len(l1_range)).
+		stat_std : np.ndarray
+			Array of standard deviation of metric values across all permutations, with shape (len(n_component_range), len(l1_range)).
 		""" 
 		assert hasattr(self,'train_index_'), "Error: run create_nfold"
 		self._check_design_matrix(len(views))
@@ -839,13 +932,13 @@ class parallel_sgcca():
 																split = split,
 																n_comp = n_comp,
 																metric_function = metric_function,
-																effective_zero = effective_zero,
+																tol = tol,
 																seed = seeds[p]) for p in tqdm(range(n_perm_per_block)))
 				stat_mean[c, i] = np.mean(stat)
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
 
-	def _premute_model(self, p, views, l1, n_comp = 1, metric = 'objective_function', effective_zero = 1e-4, seed = None):
+	def _premute_model(self, p, views, l1, n_comp = 1, metric = 'objective_function', tol = 1e-4, seed = None):
 		"""
 		Selection of best hyperparameters using permutation testing.
 		"""
@@ -860,7 +953,7 @@ class parallel_sgcca():
 									scale = True,
 									init = "svd",
 									bias = True,
-									effective_zero = float(effective_zero)).fit(self.permute_views(views), verbose = False)
+									tol = float(tol)).fit(self.permute_views(views), verbose = False)
 		if metric == 'fisherz_transformation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
@@ -877,7 +970,7 @@ class parallel_sgcca():
 			pstat = np.sum(pmdl.crit)
 		return(pstat)
 
-	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', effective_zero = 1e-3, verbose = True):
+	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', tol = 1e-3, verbose = True):
 		"""
 		Parameters
 		----------
@@ -905,7 +998,7 @@ class parallel_sgcca():
 										scale = True,
 										init = "svd",
 										bias = True,
-										effective_zero = effective_zero).fit(views_train)
+										tol = tol).fit(views_train)
 			parameterselection_l1_penalties.append(mdl.l1_sparsity)
 			mat = np.corrcoef(mdl.scores_[:,:,0])
 			if metric == 'fisherz_transformation':
@@ -921,7 +1014,7 @@ class parallel_sgcca():
 															l1 = l1,
 															n_comp = 1,
 															metric = metric,
-															effective_zero = effective_zero,
+															tol = tol,
 															seed = seeds[p]) for p in tqdm(range(n_perm_per_block)))
 			z = np.divide((t - np.mean(tstar)), np.std(tstar))
 			tmetric[i] = t
@@ -1204,6 +1297,30 @@ class parallel_sgcca():
 		return(loadings_bootstrap_pval_, loadings_bootstrap_CI_025_, loadings_bootstrap_CI_975_)
 
 # Plotting functions
+
+def plot_ncomponents(model, max_n_comp = 50, labels = None):
+	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix, l1_sparsity = model.l1_sparsity_, n_comp = max_n_comp, scheme = model.scheme, effective_zero=1e-8).fit(model.views_train_)
+	x_values = np.arange(0, max_n_comp, 1)
+	if labels is None:
+		labels = ["View %d" % (i+1) for i in range(temp_model.n_views_)]
+	fig, ax = plt.subplots(figsize=(8, 6))
+	sns.set(style="ticks", font_scale=1.3)
+	sns.lineplot(x=x_values, y=cumulative_sum_of_array(temp_model.AVE_outer_), linewidth=2, color='k', label='Model')
+	colors = sns.color_palette("Set1", n_colors=len(labels))
+	for i, label in enumerate(labels):
+		sns.lineplot(x=x_values, y=cumulative_sum_of_array(temp_model.AVE_views_[i]), linewidth=2, color=colors[i], label=label, ls='--')
+	ax.spines['top'].set_visible(False)
+	ax.spines['right'].set_visible(False)
+	ax.tick_params(axis='both', which='both')
+	plt.xlabel('Number of Components')
+	plt.ylabel('Cumulative AVE')
+	plt.xlim([1, max_n_comp])
+	plt.ylim([0., 1.])
+	ax.legend(loc="best", fontsize=10)
+	sns.despine()
+	plt.tight_layout()
+	plt.show()
+
 def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", png_basename = None, L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True):
 	tmetric = np.array(model.parameterselection_tmetric_)
 	tstar_ = np.array(model.parameterselection_tstar_)
