@@ -553,6 +553,7 @@ class sgcca_rwrapper:
 			The AVE of the inner model, which is the average correlation between blocks.
 		"""
 		assert len(views) == len(self.views_), "Error: The length of views and does not match model's number of views."
+		views = self.scaleviews(views)
 		scores, loadings = self.transform(views, calculate_loading=True, outer=False)
 		n_comp = np.max(self.n_comp)
 		# Orthonormalize the scores if they are correlated.
@@ -572,10 +573,11 @@ class sgcca_rwrapper:
 		n_vars_ = np.zeros((self.n_views_))
 		for v in range(self.n_views_):
 			n_vars_[v] = views[v].shape[1]
+		totvar = np.array([np.sum(np.var(views[i],0)) for i in range(self.n_views_)])
 		AVE_outer_ = np.zeros((self.n_views_, n_comp))
 		for v in range(self.n_views_):
-			AVE_outer_[v] = np.mean((np.square(loadings[v])), 0) * n_vars_[v]
-		AVE_outer_ /= n_vars_.sum()
+			AVE_outer_[v] = np.mean((np.square(loadings[v])), 0) * totvar[v]
+		AVE_outer_ /= totvar.sum()
 		AVE_outer_ = AVE_outer_.sum(0)
 		
 		# Compute AVE for the inner model, which is the average correlation between blocks
@@ -1592,4 +1594,4 @@ def plot_prediction_bootstraps(model, png_basename = None):
 		plt.close()
 	else:
 		plt.show()
-
+ 
