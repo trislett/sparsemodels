@@ -363,8 +363,8 @@ class sgcca_rwrapper:
 		
 		numpy2ri.activate()
 		fit = rgcca.rgcca(blocks = self.views_, 
-							C = self.design_matrix,
-							connection = self.l1_sparsity,
+							connection = self.design_matrix,
+							sparsity = self.l1_sparsity,
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
