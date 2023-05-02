@@ -1088,8 +1088,8 @@ class parallel_sgcca():
 		stat_train_p = np.zeros((np.max(self.n_components_)))
 		stat_test_p = np.zeros((np.max(self.n_components_)))
 		for c in range(self.n_components_):
-			stat_train_p[c] = np.divide(np.searchsorted(np.sort(statstar_train[:,c]), stat_train[c]), len(self.n_permutations))
-			stat_test_p[c] = np.divide(np.searchsorted(np.sort(statstar_test[:,c]), stat_test[c]), len(self.n_permutations))
+			stat_train_p[c] = np.divide(np.searchsorted(np.sort(statstar_train[:,c]), stat_train[c]), self.n_permutations)
+			stat_test_p[c] = np.divide(np.searchsorted(np.sort(statstar_test[:,c]), stat_test[c]), self.n_permutations)
 		# save permuted models
 		self.perm_stat_train_ = stat_train
 		self.perm_stat_train_z_ = zstat_train
