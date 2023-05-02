@@ -362,30 +362,30 @@ class sgcca_rwrapper:
 		self.check_sparsity(verbose = verbose)
 		
 		numpy2ri.activate()
-		fit = rgcca.rgcca(blocks = model.model_obj_.views_, 
-							connection = model.model_obj_.design_matrix,
-							sparsity = model.model_obj_.l1_sparsity,
-							ncomp = model.model_obj_.n_comp, 
-							scheme = model.model_obj_.scheme,
+		fit = rgcca.rgcca(blocks = self.views_, 
+							connection = self.design_matrix,
+							sparsity = self.l1_sparsity,
+							ncomp = self.n_comp, 
+							scheme = self.scheme,
 							scale = False,
 							scale_block = False,
 							method = str('sgcca'),
-							init = model.model_obj_.init,
-							bias = model.model_obj_.bias,
-							tol = model.model_obj_.tol,
+							init = self.init,
+							bias = self.bias,
+							tol = self.tol,
 							verbose  = False)
 		numpy2ri.deactivate()
 		
 		self.scores_ = np.array(fit.rx2('Y'))
-		self.weights_outer_ = model.model_obj_._rlist_to_nplist(fit.rx2('a'))
-		self.weights_ = model.model_obj_._rlist_to_nplist(fit.rx2('astar'))
+		self.weights_outer_ = self._rlist_to_nplist(fit.rx2('a'))
+		self.weights_ = self._rlist_to_nplist(fit.rx2('astar'))
 		self.AVE_views_ = np.array(fit.rx2('AVE')[0]) # this is the mean of the structural coefficents
 		self.AVE_outer_ = np.array(fit.rx2('AVE')[2])
 		self.AVE_inner_ = np.array(fit.rx2('AVE')[3])
-		if np.max(self.n_comp)== 1:
-			self.crit = np.array(fit.rx2('crit'))
+		if np.max(self.n_comp) == 1:
+			self.crit = np.array(fit.rx2('crit'))[-1]
 		else:
-			self.crit = model.model_obj_._final_crit(fit.rx2('crit'))
+			self.crit = self._final_crit(fit.rx2('crit'))
 		return(self)
 
 	def transform(self, views, calculate_loading = False, outer = False):
