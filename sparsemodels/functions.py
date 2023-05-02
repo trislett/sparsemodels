@@ -938,7 +938,7 @@ class parallel_sgcca():
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
 
-	def _premute_model(self, p, views, l1, n_comp = 1, metric = 'objective_function', tol = 1e-4, seed = None):
+	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-4, seed = None):
 		"""
 		Selection of best hyperparameters using permutation testing.
 		"""
@@ -947,28 +947,111 @@ class parallel_sgcca():
 		else:
 			np.random.seed(seed)
 		pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
-									l1_sparsity = float(l1),
+									l1_sparsity = l1,
 									n_comp = n_comp,
 									scheme = self.scheme,
 									scale = True,
 									init = "svd",
 									bias = True,
-									tol = float(tol)).fit(self.permute_views(views), verbose = False)
+									tol = tol).fit(self.permute_views(views_train), verbose = False)
+		print(pmdl.AVE_inner_)
 		if metric == 'fisherz_transformation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
-				mat = np.corrcoef(pmdl.scores_[:,:,0])
+				mat = np.corrcoef(pmdl.scores_[:,:,c])
 				pstat[c] = np.sum(np.abs(np.arctanh(mat))[self.matidx_])
-			pstat = np.sum(pstat)
+			if aggregate_values:
+				pstat = np.sum(pstat)
 		elif metric == 'mean_correlation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
-				mat = np.corrcoef(pmdl.scores_[:,:,0])
+				mat = np.corrcoef(pmdl.scores_[:,:,c])
 				pstat[c] = np.mean(np.abs(mat)[self.matidx_])
-			pstat = np.mean(pstat)
+			if aggregate_values:
+				pstat = np.mean(pstat)
 		else:
-			pstat = np.sum(pmdl.crit)
-		return(pstat)
+			if aggregate_values:
+				pstat = np.sum(pmdl.crit)
+			else:
+				pstat = pmdl.crit
+		if views_test is None:
+			return(pstat)
+		else:
+			scores_test = pmdl.transform(views_test)
+			pstat_test = np.zeros((n_comp))
+			if metric == 'fisherz_transformation':
+				for c in range(n_comp):
+					mat = np.corrcoef(scores_test[:,:,0])
+					pstat_test[c] = np.sum(np.abs(np.arctanh(mat))[self.matidx_])
+				if aggregate_values:
+					pstat_test = np.sum(pstat_test)
+			elif metric == 'mean_correlation':
+				for c in range(n_comp):
+					mat = np.corrcoef(scores_test[:,:,c])
+					pstat_test[c] = np.mean(np.abs(mat)[self.matidx_])
+				if aggregate_values:
+					pstat_test = np.mean(pstat_test)
+			else:
+				pstat_test = pmdl._covariance_criteria(scores_test)
+				if aggregate_values:
+					pstat_test = np.sum(pstat_test)
+			return(pstat, pstat_test)
+
+	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3):
+		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		"""
+		Parameters
+		----------
+		metric: str
+			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
+		tol: float
+			tolerance of the model
+		Returns
+		---------
+			self
+		"""
+		n_comp = np.max(self.n_components_)
+		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+									l1_sparsity = self.l1_sparsity_,
+									n_comp = self.n_components_,
+									scheme = self.scheme,
+									scale = True,
+									init = "svd",
+									bias = True,
+									tol = tol).fit(self.views_train_)
+		test_scores = mdl.transform(self.views_test_)
+		t = np.zeros((n_comp))
+		t_test = np.zeros((n_comp))
+		if metric == 'fisherz_transformation':
+			for c in range(n_comp):
+				mat = np.corrcoef(mdl.scores_[:,:,c])
+				t[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
+				mat = np.corrcoef(test_scores[:,:,c])
+				t_test[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
+		elif metric == 'mean_correlation':
+			for c in range(n_comp):
+				mat = np.corrcoef(mdl.scores_[:,:,c])
+				t[c] = np.mean(np.abs(mat)[self.matidx_])
+				mat = np.corrcoef(test_scores[:,:,c])
+				t_test[c] = np.mean(np.abs(mat)[self.matidx_])
+		else:
+			t[:] = np.array(mdl.crit)
+			t_test[:] = mdl._covariance_criteria(test_scores)
+		seeds = generate_seeds(self.n_permutations)
+		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+					delayed(self._premute_model)(p = p,
+														views_train = self.views_train_,
+														l1 = self.l1_sparsity_,
+														views_test = self.views_test_,
+														n_comp = self.n_components_,
+														aggregate_values = False,
+														metric = metric,
+														tol = tol,
+														seed = seeds[p]) for p in tqdm(range(self.n_permutations)))
+		tstar_train, tstar_test = zip(*output)
+		tstar_train = np.array(tstar_train)
+		tstar_test = np.array(tstar_test)
+		return(t, t_test, tstar_train, tstar_test)
 
 	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', tol = 1e-3, verbose = True):
 		"""
@@ -982,7 +1065,7 @@ class parallel_sgcca():
 		---------
 			self
 		"""
-		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		assert hasattr(self,'model_obj_'), "Error: run fit_model"
 		self._check_design_matrix(len(views))
 		
 		views_train = self.subsetviews(views, self.train_index_)
@@ -1010,7 +1093,7 @@ class parallel_sgcca():
 			seeds = generate_seeds(n_perm_per_block)
 			tstar = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 						delayed(self._premute_model)(p = p,
-															views = views_train,
+															views_train = views_train,
 															l1 = l1,
 															n_comp = 1,
 															metric = metric,
@@ -1196,17 +1279,18 @@ class parallel_sgcca():
 
 	# Candidate functions
 	
-	def bootstrap_model_loadings(self, n_bootstraps = 10000):
+	def bootstrap_model_loadings(self, n_bootstraps = 10000, bootstrap_training_loading = False):
 		print("[Training Data]")
 		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_train_, n_bootstraps = n_bootstraps)
 		self.train_loadings_bootstrap_pval_ = lbs_pval_
 		self.train_loadings_bootstrap_CI_025_ = lbs_CI_025_
 		self.train_loadings_bootstrap_CI_975_ = lbs_CI_975_
-		print("[Training Data]")
-		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_test_, n_bootstraps = n_bootstraps)
-		self.test_loadings_bootstrap_pval_ = lbs_pval_
-		self.test_loadings_bootstrap_CI_025_ = lbs_CI_025_
-		self.test_loadings_bootstrap_CI_975_ = lbs_CI_975_
+		if bootstrap_training_loading:
+			print("[Training Data]")
+			lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_test_, n_bootstraps = n_bootstraps)
+			self.test_loadings_bootstrap_pval_ = lbs_pval_
+			self.test_loadings_bootstrap_CI_025_ = lbs_CI_025_
+			self.test_loadings_bootstrap_CI_975_ = lbs_CI_975_
 
 	def _inner_correlation_func(self, b, mat, n_subs, seed):
 		if seed is None:
@@ -1298,9 +1382,37 @@ class parallel_sgcca():
 
 # Plotting functions
 
-def plot_ncomponents(model, max_n_comp = 50, labels = None):
-	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix, l1_sparsity = model.l1_sparsity_, n_comp = max_n_comp, scheme = model.scheme, effective_zero=1e-8).fit(model.views_train_)
-	x_values = np.arange(0, max_n_comp, 1)
+def plot_ncomponents(model, views, max_n_comp, l1_sparsity, labels = None, png_basename = None):
+	"""
+	Plot the cumulative average variance explained (AVE) as a function of the number of components for a given SGCCA model.
+
+	Parameters:
+	--------
+		model : object
+			A SGCCA object that contains a design matrix and scheme.
+		views : list
+			A list of views (numpy arrays) used to train the SGCCA model.
+		max_n_comp: int or ndarray
+			The maximum number of components to plot the AVE. It can be an array with each view having a value.
+		l1_sparsity: float  or np.ndarray
+			The sparsity parameter for each view. If a scalar float, it is used for all views. If a numpy array, it must have shape (max_n_comp, n_views).
+		labels (list, optional): A list of strings to label each view. Default is None, which labels each view as 'View i'.
+		png_basename (str, optional): The base name for the output PNG file. If None, the plot is displayed instead of being saved. Default is None.
+
+	Returns:
+	--------
+		None
+	"""
+
+	assert hasattr(model,'train_index_'), "Error: no training data index. Run create_nfold."
+	views_train_ = model.subsetviews(views, model.train_index_)
+	n_views_ = len(views_train_)
+	if np.isscalar(l1_sparsity):
+		l1_sparsity = np.repeat(l1_sparsity, n_views_)
+	if l1_sparsity.shape != (np.max(max_n_comp), n_views_):
+		l1_sparsity = np.tile(l1_sparsity, np.max(max_n_comp)).reshape(np.max(max_n_comp), n_views_)
+	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix, l1_sparsity = l1_sparsity, n_comp = max_n_comp, scheme = model.scheme, tol=1e-8).fit(views_train_)
+	x_values = np.arange(0, np.max(max_n_comp), 1)
 	if labels is None:
 		labels = ["View %d" % (i+1) for i in range(temp_model.n_views_)]
 	fig, ax = plt.subplots(figsize=(8, 6))
@@ -1314,14 +1426,18 @@ def plot_ncomponents(model, max_n_comp = 50, labels = None):
 	ax.tick_params(axis='both', which='both')
 	plt.xlabel('Number of Components')
 	plt.ylabel('Cumulative AVE')
-	plt.xlim([1, max_n_comp])
+	plt.xlim([1, np.max(max_n_comp)])
 	plt.ylim([0., 1.])
 	ax.legend(loc="best", fontsize=10)
 	sns.despine()
 	plt.tight_layout()
-	plt.show()
+	if png_basename is not None:
+		plt.savefig("%s_plot_ncomponentspng" % png_basename)
+		plt.close()
+	else:
+		plt.show()
 
-def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", png_basename = None, L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True):
+def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True, png_basename = None):
 	tmetric = np.array(model.parameterselection_tmetric_)
 	tstar_ = np.array(model.parameterselection_tstar_)
 	if scale_tuning_metric:
@@ -1360,14 +1476,12 @@ def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric
 	else:
 		plt.show()
 
-def scatter_histogram(x, y, xlabel = None, ylabel = None):
+def scatter_histogram(x, y, xlabel = None, ylabel = None, png_basename = None):
 	"""
 	Scatter plot best fit line as well as with histograms with gaussian_kde curves
 	
 	e.g.,
 	scatter_hist(yhat, Y_, 'Neuroimaging Variates', 'Clinical Variates')
-	plt.tight_layout()
-	plt.show()
 	"""
 	def _scatter_hist(x, y, ax, ax_histx, ax_histy, xlabel = None, ylabel = None):
 		ax_histx.tick_params(axis="x", labelbottom=False)
@@ -1375,11 +1489,15 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 		sns.regplot(x = x, y = y, ax = ax)
 		x0,x1 = ax.get_xlim()
 		y0,y1 = ax.get_ylim()
-		ax_histx.hist(x, bins=np.arange(x0, x1, x.var()*2), density=True)
+		if len(np.arange(x0, x1, x.var()*4)) > 30:
+			xbins = 30
+		else:
+			xbins = np.arange(x0, x1, x.var()*4)
+		ax_histx.hist(x, bins=xbins, density=True)
 		xs_ = np.linspace(x0, x1, 301)
 		kde = gaussian_kde(x)
 		ax_histx.plot(xs_, kde.pdf(xs_))
-		ax_histy.hist(y, bins=np.arange(y0, y1, y.var()*4), orientation='horizontal', density=True)
+		ax_histy.hist(y, bins=np.arange(y0, y1, y.var()*2), orientation='horizontal', density=True)
 		ys_ = np.linspace(y0, y1, 301)
 		kde = gaussian_kde(y)
 		ax_histy.plot(kde.pdf(ys_), ys_)
@@ -1388,7 +1506,7 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 	# the size of the marginal axes and the main axes in both directions.
 	# Also adjust the subplot parameters for a square plot.
 	gs = fig.add_gridspec(2, 2,  width_ratios=(4, 1), height_ratios=(1, 4),
-								left=0.1, right=0.9, bottom=0.1, top=0.9,
+								left=0.2, right=0.9, bottom=0.1, top=0.9,
 								wspace=0.05, hspace=0.05)
 	# Create the Axes.
 	ax = fig.add_subplot(gs[1, 0])
@@ -1400,6 +1518,11 @@ def scatter_histogram(x, y, xlabel = None, ylabel = None):
 	ax_histy = fig.add_subplot(gs[1, 1], sharey=ax)
 	# Draw the scatter plot and marginals.
 	_scatter_hist(x, y, ax, ax_histx, ax_histy, xlabel = xlabel, ylabel = ylabel)
+	if png_basename is not None:
+		plt.savefig("%s_scatter_histogram.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
 
 def plot_prediction_bootstraps(model, png_basename = None):
 	component_indices = np.arange(model.n_components_)
@@ -1413,7 +1536,7 @@ def plot_prediction_bootstraps(model, png_basename = None):
 	ax.set_yticklabels([f'Component {i+1}' for i in component_indices])
 	ax.set_ylabel('SGCCA Component')
 	ax.set_xlabel('Prediction (r)')
-	ax.legend()
+	ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1))
 	ax.invert_yaxis()
 	plt.axvline(0, ls = '--', color = 'k')
 	plt.tight_layout()
