@@ -1031,7 +1031,7 @@ class parallel_sgcca():
 		---------
 			self
 		"""
-		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+		assert hasattr(self,'model_obj_'), "Error: run fit_model"
 		n_comp = np.max(self.n_components_)
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = self.l1_sparsity_,
@@ -1110,7 +1110,7 @@ class parallel_sgcca():
 		---------
 			self
 		"""
-		assert hasattr(self,'model_obj_'), "Error: run fit_model"
+		assert hasattr(self,'train_index_'), "Error: run create_nfold"
 		self._check_design_matrix(len(views))
 		
 		views_train = self.subsetviews(views, self.train_index_)
