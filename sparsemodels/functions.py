@@ -362,12 +362,13 @@ class sgcca_rwrapper:
 		self.check_sparsity(verbose = verbose)
 		
 		numpy2ri.activate()
-		fit = rgcca.sgcca(A = self.views_, 
+		fit = rgcca.rgcca(blocks = self.views_, 
 							C = self.design_matrix,
-							c1 = self.l1_sparsity,
+							connection = self.l1_sparsity,
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
+							method = str('rgcca'),
 							init = self.init,
 							bias = self.bias,
 							tol = self.tol,
