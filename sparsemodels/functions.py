@@ -368,7 +368,7 @@ class sgcca_rwrapper:
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
-							method = str('rgcca'),
+							method = str('sgcca'),
 							init = self.init,
 							bias = self.bias,
 							tol = self.tol,
