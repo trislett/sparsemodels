@@ -1201,9 +1201,9 @@ class parallel_sgcca():
 		self.test_scores_ = test_scores_
 		self.test_loadings_ = test_loadings_
 		corr_index = np.where(self.matidx_)
-		train_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
-		test_canonical_correlation = np.zeros((n_components, len(corr_index[0])))
-		for c in range(n_components):
+		train_canonical_correlation = np.zeros((np.max(n_components), len(corr_index[0])))
+		test_canonical_correlation = np.zeros((np.max(n_components), len(corr_index[0])))
+		for c in range(np.max(n_components)):
 			train_canonical_correlation[c] = np.corrcoef(self.train_scores_[:,:,c])[corr_index]
 			test_canonical_correlation[c] = np.corrcoef(self.test_scores_[:,:,c])[corr_index]
 
