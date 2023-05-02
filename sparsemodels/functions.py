@@ -938,23 +938,37 @@ class parallel_sgcca():
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
 
-	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-4, seed = None):
+	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-3, seed = None):
 		"""
-		Selection of best hyperparameters using permutation testing.
+		Permutation testing for model significance and hyperparameter selection.
 		"""
 		if seed is None:
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
-		pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
-									l1_sparsity = l1,
-									n_comp = n_comp,
-									scheme = self.scheme,
-									scale = True,
-									init = "svd",
-									bias = True,
-									tol = tol).fit(self.permute_views(views_train), verbose = False)
-		print(pmdl.AVE_inner_)
+		for attempt in range(10):
+			try:
+				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = l1,
+											n_comp = n_comp,
+											scheme = self.scheme,
+											scale = True,
+											init = "svd",
+											bias = True,
+											tol = tol).fit(self.permute_views(views_train), verbose = False)
+			except:
+				print("Error in permuted model. Reshuffling try %d/10" % (attempt+1))
+				np.random.seed(seed+1)
+				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = l1,
+											n_comp = n_comp,
+											scheme = self.scheme,
+											scale = True,
+											init = "svd",
+											bias = True,
+											tol = tol).fit(self.permute_views(views_train), verbose = False)
+			else:
+				break
 		if metric == 'fisherz_transformation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
@@ -969,11 +983,14 @@ class parallel_sgcca():
 				pstat[c] = np.mean(np.abs(mat)[self.matidx_])
 			if aggregate_values:
 				pstat = np.mean(pstat)
+		elif metric == 'AVE_inner':
+			pstat = pmdl.AVE_inner_
+			if aggregate_values:
+				pstat = np.mean(pmdl.AVE_inner_)
 		else:
+			pstat = pmdl.crit
 			if aggregate_values:
 				pstat = np.sum(pmdl.crit)
-			else:
-				pstat = pmdl.crit
 		if views_test is None:
 			return(pstat)
 		else:
@@ -991,25 +1008,29 @@ class parallel_sgcca():
 					pstat_test[c] = np.mean(np.abs(mat)[self.matidx_])
 				if aggregate_values:
 					pstat_test = np.mean(pstat_test)
-			else:
+			elif metric == 'AVE_inner':
 				pstat_test = pmdl._covariance_criteria(scores_test)
 				if aggregate_values:
 					pstat_test = np.sum(pstat_test)
+			else:
+				pstat_test = pmdl.calculate_average_variance_explained(views_test)[2]
+				if aggregate_values:
+					pstat_test = np.mean(pstat_test)
 			return(pstat, pstat_test)
 
-	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3):
-		assert hasattr(self,'train_index_'), "Error: run create_nfold"
+	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3, save_permutations = True):
 		"""
 		Parameters
 		----------
 		metric: str
-			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
+			Metric options are: objective_function, AVE_inner, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
 		tol: float
 			tolerance of the model
 		Returns
 		---------
 			self
 		"""
+		assert hasattr(self,'train_index_'), "Error: run create_nfold"
 		n_comp = np.max(self.n_components_)
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = self.l1_sparsity_,
@@ -1020,23 +1041,26 @@ class parallel_sgcca():
 									bias = True,
 									tol = tol).fit(self.views_train_)
 		test_scores = mdl.transform(self.views_test_)
-		t = np.zeros((n_comp))
-		t_test = np.zeros((n_comp))
+		stat_train = np.zeros((n_comp))
+		stat_test = np.zeros((n_comp))
 		if metric == 'fisherz_transformation':
 			for c in range(n_comp):
 				mat = np.corrcoef(mdl.scores_[:,:,c])
-				t[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
+				stat_train[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
 				mat = np.corrcoef(test_scores[:,:,c])
-				t_test[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
+				stat_test[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
 		elif metric == 'mean_correlation':
 			for c in range(n_comp):
 				mat = np.corrcoef(mdl.scores_[:,:,c])
-				t[c] = np.mean(np.abs(mat)[self.matidx_])
+				stat_train[c] = np.mean(np.abs(mat)[self.matidx_])
 				mat = np.corrcoef(test_scores[:,:,c])
-				t_test[c] = np.mean(np.abs(mat)[self.matidx_])
+				stat_test[c] = np.mean(np.abs(mat)[self.matidx_])
+		elif metric == 'AVE_inner':
+			stat_train[:] = mdl.AVE_inner_
+			stat_test[:] = mdl.calculate_average_variance_explained(self.views_test_)[2]
 		else:
-			t[:] = np.array(mdl.crit)
-			t_test[:] = mdl._covariance_criteria(test_scores)
+			stat_train[:] = np.array(mdl.crit)
+			stat_test[:] = mdl._covariance_criteria(test_scores)
 		seeds = generate_seeds(self.n_permutations)
 		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 					delayed(self._premute_model)(p = p,
@@ -1048,10 +1072,30 @@ class parallel_sgcca():
 														metric = metric,
 														tol = tol,
 														seed = seeds[p]) for p in tqdm(range(self.n_permutations)))
-		tstar_train, tstar_test = zip(*output)
-		tstar_train = np.array(tstar_train)
-		tstar_test = np.array(tstar_test)
-		return(t, t_test, tstar_train, tstar_test)
+		statstar_train, statstar_test = zip(*output)
+		statstar_train = np.array(statstar_train)
+		if statstar_train.ndim == 1:
+			statstar_train = statstar_train[:,np.newaxis]
+		statstar_test = np.array(statstar_test)
+		if statstar_test.ndim == 1:
+			statstar_test = statstar_test[:,np.newaxis]
+		zstat_train = (stat_train - statstar_train.mean(0)) / statstar_train.std(0)
+		zstat_test = (stat_test - statstar_test.mean(0)) / statstar_test.std(0)
+		stat_train_p = np.zeros((np.max(self.n_components_)))
+		stat_test_p = np.zeros((np.max(self.n_components_)))
+		for c in range(self.n_components_):
+			stat_train_p[c] = np.divide(np.searchsorted(np.sort(statstar_train[:,c]), stat_train[c]), len(self.n_permutations))
+			stat_test_p[c] = np.divide(np.searchsorted(np.sort(statstar_test[:,c]), stat_test[c]), len(self.n_permutations))
+		# save permuted models
+		self.perm_stat_train_ = stat_train
+		self.perm_stat_train_z_ = zstat_train
+		self.perm_stat_train_p_ = stat_train_p
+		self.perm_stat_test_ = stat_test
+		self.perm_stat_test_z_ = zstat_test
+		self.perm_stat_test_p_ = stat_test_p
+		if save_permutations:
+			self.perm_statstar_train_ = statstar_train
+			self.perm_statstar_test_ = statstar_test
 
 	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', tol = 1e-3, verbose = True):
 		"""
