@@ -1013,13 +1013,13 @@ class parallel_sgcca():
 				if aggregate_values:
 					pstat_test = np.mean(pstat_test)
 			elif metric == 'AVE_inner':
-				pstat_test = pmdl._covariance_criteria(scores_test)
-				if aggregate_values:
-					pstat_test = np.sum(pstat_test)
-			else:
 				pstat_test = pmdl.calculate_average_variance_explained(views_test)[2]
 				if aggregate_values:
 					pstat_test = np.mean(pstat_test)
+			else:
+				pstat_test = pmdl._covariance_criteria(scores_test)
+				if aggregate_values:
+					pstat_test = np.sum(pstat_test)
 			return(pstat, pstat_test)
 
 	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3, save_permutations = True):
@@ -1088,8 +1088,8 @@ class parallel_sgcca():
 		stat_train_p = np.zeros((np.max(self.n_components_)))
 		stat_test_p = np.zeros((np.max(self.n_components_)))
 		for c in range(self.n_components_):
-			stat_train_p[c] = np.divide(np.searchsorted(np.sort(statstar_train[:,c]), stat_train[c]), self.n_permutations)
-			stat_test_p[c] = np.divide(np.searchsorted(np.sort(statstar_test[:,c]), stat_test[c]), self.n_permutations)
+			stat_train_p[c] = 1 - np.divide(np.searchsorted(np.sort(statstar_train[:,c]), stat_train[c]), self.n_permutations)
+			stat_test_p[c] = 1 - np.divide(np.searchsorted(np.sort(statstar_test[:,c]), stat_test[c]), self.n_permutations)
 		# save permuted models
 		self.perm_stat_train_ = stat_train
 		self.perm_stat_train_z_ = zstat_train
@@ -1525,7 +1525,7 @@ def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric
 	else:
 		plt.show()
 
-def scatter_histogram(x, y, xlabel = None, ylabel = None, png_basename = None):
+def plot_scatter_histogram(x, y, xlabel = None, ylabel = None, png_basename = None):
 	"""
 	Scatter plot best fit line as well as with histograms with gaussian_kde curves
 	
