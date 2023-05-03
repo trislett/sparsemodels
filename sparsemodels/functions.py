@@ -530,7 +530,7 @@ class sgcca_rwrapper:
 			yhat[:, i] = reg.predict(X_)
 		return(yhat)
 
-	def calculate_average_variance_explained(self, views, use_gram_schmidt_orthonormalize = False):
+	def calculate_average_variance_explained(self, views, use_gram_schmidt_orthonormalize = False, outer = False):
 		"""
 		Computes the average variance explained (AVE) for a given set of views.
 		AVE is a measure of the proportion of variance of the original data explained
@@ -554,7 +554,7 @@ class sgcca_rwrapper:
 		"""
 		assert len(views) == len(self.views_), "Error: The length of views and does not match model's number of views."
 		views = self.scaleviews(views)
-		scores, loadings = self.transform(views, calculate_loading=True, outer=False)
+		scores, loadings = self.transform(views, calculate_loading=True, outer = outer)
 		n_comp = np.max(self.n_comp)
 		# Orthonormalize the scores if they are correlated.
 		# Q = gram_schmidt_orthonormalize(score)
@@ -942,7 +942,7 @@ class parallel_sgcca():
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
 
-	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-3, seed = None):
+	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-3, outer = True, seed = None):
 		"""
 		Permutation testing for model significance and hyperparameter selection.
 		"""
@@ -952,6 +952,7 @@ class parallel_sgcca():
 			np.random.seed(seed)
 		for attempt in range(10):
 			try:
+				pviews = self.permute_views(views_train)
 				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1,
 											n_comp = n_comp,
@@ -959,10 +960,11 @@ class parallel_sgcca():
 											scale = True,
 											init = "svd",
 											bias = True,
-											tol = tol).fit(self.permute_views(views_train), verbose = False)
+											tol = tol).fit(pviews, verbose = False)
 			except:
 				print("Error in permuted model. Reshuffling try %d/10" % (attempt+1))
 				np.random.seed(seed+1)
+				pviews = self.permute_views(views_train)
 				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1,
 											n_comp = n_comp,
@@ -970,35 +972,36 @@ class parallel_sgcca():
 											scale = True,
 											init = "svd",
 											bias = True,
-											tol = tol).fit(self.permute_views(views_train), verbose = False)
+											tol = tol).fit(pviews, verbose = False)
 			else:
 				break
+		pscores_train = pmdl.transform(pviews, outer=outer)
 		if metric == 'fisherz_transformation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
-				mat = np.corrcoef(pmdl.scores_[:,:,c])
+				mat = np.corrcoef(pscores_train[:,:,c])
 				pstat[c] = np.sum(np.abs(np.arctanh(mat))[self.matidx_])
 			if aggregate_values:
 				pstat = np.sum(pstat)
 		elif metric == 'mean_correlation':
 			pstat = np.zeros((n_comp))
 			for c in range(n_comp):
-				mat = np.corrcoef(pmdl.scores_[:,:,c])
+				mat = np.corrcoef(pscores_train[:,:,c])
 				pstat[c] = np.mean(np.abs(mat)[self.matidx_])
 			if aggregate_values:
 				pstat = np.mean(pstat)
 		elif metric == 'AVE_inner':
-			pstat = pmdl.AVE_inner_
+			pstat = pmdl.calculate_average_variance_explained(pviews, outer = outer)[2]
 			if aggregate_values:
-				pstat = np.mean(pmdl.AVE_inner_)
+				pstat = np.mean(pstat)
 		else:
-			pstat = pmdl.crit
+			pstat = pmdl._covariance_criteria(pscores_train)
 			if aggregate_values:
 				pstat = np.sum(pmdl.crit)
 		if views_test is None:
 			return(pstat)
 		else:
-			scores_test = pmdl.transform(views_test)
+			scores_test = pmdl.transform(views_test, outer=outer)
 			pstat_test = np.zeros((n_comp))
 			if metric == 'fisherz_transformation':
 				for c in range(n_comp):
@@ -1013,7 +1016,7 @@ class parallel_sgcca():
 				if aggregate_values:
 					pstat_test = np.mean(pstat_test)
 			elif metric == 'AVE_inner':
-				pstat_test = pmdl.calculate_average_variance_explained(views_test)[2]
+				pstat_test = pmdl.calculate_average_variance_explained(views_test, outer = outer)[2]
 				if aggregate_values:
 					pstat_test = np.mean(pstat_test)
 			else:
@@ -1022,7 +1025,7 @@ class parallel_sgcca():
 					pstat_test = np.sum(pstat_test)
 			return(pstat, pstat_test)
 
-	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3, save_permutations = True):
+	def run_parallel_permute_model(self, metric = 'objective_function', tol = 1e-3, save_permutations = True, outer = True):
 		"""
 		Parameters
 		----------
@@ -1030,11 +1033,14 @@ class parallel_sgcca():
 			Metric options are: objective_function, AVE_inner, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
 		tol: float
 			tolerance of the model
+		outer: bool (default True)
+			Use coefficients that haven't been orthonormalized. This is useful for determining the significance of multiple components.
 		Returns
 		---------
 			self
 		"""
 		assert hasattr(self,'model_obj_'), "Error: run fit_model"
+		assert metric in ['objective_function', 'AVE_inner', 'fisherz_transformation', 'mean_correlation'], "Error: metric must be objective_function, AVE_inner, fisherz_transformation, or mean_correlation."
 		n_comp = np.max(self.n_components_)
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = self.l1_sparsity_,
@@ -1043,27 +1049,28 @@ class parallel_sgcca():
 									scale = True,
 									init = "svd",
 									bias = True,
-									tol = tol).fit(self.views_train_)
-		test_scores = mdl.transform(self.views_test_)
+									tol = 1e-8).fit(self.views_train_)
+		train_scores = mdl.transform(self.views_train_, outer = outer)
+		test_scores = mdl.transform(self.views_test_, outer = outer)
 		stat_train = np.zeros((n_comp))
 		stat_test = np.zeros((n_comp))
 		if metric == 'fisherz_transformation':
 			for c in range(n_comp):
-				mat = np.corrcoef(mdl.scores_[:,:,c])
+				mat = np.corrcoef(train_scores[:,:,c])
 				stat_train[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
 				mat = np.corrcoef(test_scores[:,:,c])
 				stat_test[c] = np.sum(np.abs(np.arctanh(mat))[mdl.matidx_])
 		elif metric == 'mean_correlation':
 			for c in range(n_comp):
-				mat = np.corrcoef(mdl.scores_[:,:,c])
+				mat = np.corrcoef(train_scores[:,:,c])
 				stat_train[c] = np.mean(np.abs(mat)[self.matidx_])
 				mat = np.corrcoef(test_scores[:,:,c])
 				stat_test[c] = np.mean(np.abs(mat)[self.matidx_])
 		elif metric == 'AVE_inner':
-			stat_train[:] = mdl.AVE_inner_
-			stat_test[:] = mdl.calculate_average_variance_explained(self.views_test_)[2]
+			stat_train[:] = mdl.calculate_average_variance_explained(self.views_train_, outer = outer)[2]
+			stat_test[:] = mdl.calculate_average_variance_explained(self.views_test_, outer = outer)[2]
 		else:
-			stat_train[:] = np.array(mdl.crit)
+			stat_train[:] = mdl._covariance_criteria(test_scores)
 			stat_test[:] = mdl._covariance_criteria(test_scores)
 		seeds = generate_seeds(self.n_permutations)
 		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
@@ -1075,6 +1082,7 @@ class parallel_sgcca():
 														aggregate_values = False,
 														metric = metric,
 														tol = tol,
+														outer = outer,
 														seed = seeds[p]) for p in tqdm(range(self.n_permutations)))
 		statstar_train, statstar_test = zip(*output)
 		statstar_train = np.array(statstar_train)
