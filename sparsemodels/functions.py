@@ -1546,24 +1546,16 @@ def plot_scatter_histogram(x, y, xlabel = None, ylabel = None, png_basename = No
 		sns.regplot(x = x, y = y, ax = ax)
 		x0,x1 = ax.get_xlim()
 		y0,y1 = ax.get_ylim()
-		if len(np.arange(x0, x1, x.var()*4)) > 30:
-			xbins = 30
-		else:
-			xbins = np.arange(x0, x1, x.var()*4)
-		ax_histx.hist(x, bins=xbins, density=True)
-		xs_ = np.linspace(x0, x1, 301)
-		kde = gaussian_kde(x)
-		ax_histx.plot(xs_, kde.pdf(xs_))
-		ax_histy.hist(y, bins=np.arange(y0, y1, y.var()*2), orientation='horizontal', density=True)
-		ys_ = np.linspace(y0, y1, 301)
-		kde = gaussian_kde(y)
-		ax_histy.plot(kde.pdf(ys_), ys_)
+		sns.histplot(x = x, kde=True, ax=ax_histx, stat='density')
+		sns.histplot(y = y, kde=True, ax=ax_histy, stat='density')
+		ax_histx.set(ylabel='', xlabel='')
+		ax_histy.set(ylabel='', xlabel='')
 	fig = plt.figure(figsize=(8, 6))
 	# Add a gridspec with two rows and two columns and a ratio of 1 to 4 between
 	# the size of the marginal axes and the main axes in both directions.
 	# Also adjust the subplot parameters for a square plot.
 	gs = fig.add_gridspec(2, 2,  width_ratios=(4, 1), height_ratios=(1, 4),
-								left=0.2, right=0.9, bottom=0.1, top=0.9,
+								left=0.15, right=0.9, bottom=0.1, top=0.9,
 								wspace=0.05, hspace=0.05)
 	# Create the Axes.
 	ax = fig.add_subplot(gs[1, 0])
@@ -1602,4 +1594,134 @@ def plot_prediction_bootstraps(model, png_basename = None):
 		plt.close()
 	else:
 		plt.show()
- 
+
+def plot_pairscores(model, labels, output_test_scores = False, png_basename = None, flipsign = None, annotate_fontsize = 12):
+	"""
+	Plots the canonical correlations of each component for the model.
+	
+	Parameters
+	----------
+	Label : list
+		Names for each view in order
+	output_test_scores : bool
+		Output the pair plots for the test data instead of the training data
+	png_basename : str
+		The base output name for the pair plots
+	Returns
+	---------
+	None
+	"""
+	nviews, nsubs, ncomp = model.model_obj_.scores_.shape
+	labels = np.array(labels)
+	if output_test_scores:
+		scores = []
+		for v in range(model.nviews_):
+			scores.append(np.dot(model.views_test_[v], model.model_obj_.weights_[v]))
+		scores = np.array(scores)
+	else:
+		scores = model.model_obj_.scores_
+	if flipsign is not None:
+		scores = scores * flipsign[np.newaxis,np.newaxis,:]
+		if png_basename is not None:
+			png_basename = png_basename + "_reordered"
+	nviews, nsubs, ncomp = model.model_obj_.scores_.shape
+	for c in range(model.n_components_):
+		pdTMP = pd.DataFrame()
+		for l, label in enumerate(labels):
+			pdTMP[label] = scores[l,:,c]
+
+		def plt_reg_coef(x,y,label=None,color=None,**kwargs):
+			ax = plt.gca()
+			r,p = pearsonr(x,y)
+			ax.annotate('r = {:.2f}; p = {:.2e}'.format(r, p), xy=(0.5,0.5), xycoords='axes fraction', ha='center', fontsize = annotate_fontsize)
+			ax.set_axis_off()
+		g = sns.PairGrid(pdTMP)
+		g.map_diag(sns.distplot)
+		g.map_lower(sns.regplot)
+		g.map_upper(plt_reg_coef)
+		g.tight_layout()
+		if png_basename is not None:
+			if output_test_scores:
+				plt.savefig("%s_comp%d_pair_plot_test.png" % (png_basename, int(c+1)))
+			else:
+				plt.savefig("%s_comp%d_pair_plot_train.png" % (png_basename, int(c+1)))
+			plt.close()
+		else:
+			plt.show()
+
+
+def plot_permuted_model(model, png_basename = None, n_jitters = 1000, scale_values = True):
+	if n_jitters > model.n_permutations:
+		n_jitters = model.n_permutations
+	if scale_values:
+		ztest = np.array(model.perm_stat_test_z_)
+		perm_ztest = np.zeros_like(model.perm_statstar_test_).T
+		for c in range(model.n_components_):
+			perm_ztest[c] = (model.perm_statstar_test_[:,c] - model.perm_statstar_test_[:,c].mean()) / model.perm_statstar_test_[:,c].std()
+
+		ztrain = np.array(model.perm_stat_train_z_)
+		perm_ztrain = np.zeros_like(model.perm_statstar_train_).T
+		for c in range(model.n_components_):
+			perm_ztrain[c] = (model.perm_statstar_train_[:,c] - model.perm_statstar_train_[:,c].mean()) / model.perm_statstar_train_[:,c].std()
+	else:
+		ztest = np.array(model.perm_stat_test_)
+		perm_ztest = np.array(model.perm_statstar_test_).T
+		ztrain = np.array(model.perm_stat_train_)
+		perm_ztrain = np.array(model.perm_statstar_train_).T
+
+	p_num = 1
+	n_plots = model.n_components_ 
+	plt.subplots(figsize=(int(2*n_plots) + 2, 6), dpi=100, tight_layout = True, sharey='row')
+	y1 = round(np.min(np.concatenate((ztest, (perm_ztest).flatten()))),2) - float(perm_ztest[0].std())
+	y2 = round(np.max(np.concatenate((ztest, (perm_ztest).flatten()))),2) + float(perm_ztest[0].std())
+	for c in range(model.n_components_):
+		plt.subplot(1, n_plots, p_num)
+		jitter = np.random.normal(0, scale = 0.1, size=n_jitters)
+		rand_dots = np.random.permutation(perm_ztest[c])[:n_jitters]
+		plt.scatter(jitter, rand_dots, marker = '.', alpha = 0.3)
+		plt.xlim(-.5, .5)
+		plt.title("Component %d" % (c+1))
+		plt.scatter(0, ztest[c], marker = 'o', alpha = 1.0, c = 'k')
+		plt.xticks(color='w')
+		plt.ylim(y1, y2)
+		if model.perm_stat_test_p_[c] == 0:
+			plt.xlabel("z = %1.2f, p $<$ %1.2e" % (model.perm_stat_test_z_[c], (1 / model.n_permutations)), fontsize=10)
+		elif model.perm_stat_test_p_[c] > 0.001:
+			plt.xlabel("z = %1.2f, p = %1.3f" % (model.perm_stat_test_z_[c], model.perm_stat_test_p_[c]), fontsize=10)
+		else:
+			plt.xlabel("z = %1.2f, p = %1.2e" % (model.perm_stat_test_z_[c], model.perm_stat_test_p_[c]), fontsize=10)
+		p_num += 1
+	if png_basename is not None:
+		plt.savefig("%s_model_fit_to_test.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
+	p_num = 1
+	plt.subplots(figsize=(int(2*n_plots) + 2, 6), dpi=100, tight_layout = True, sharey='row')
+	y1 = round(np.min(np.concatenate((ztrain, (perm_ztrain).flatten()))),2) - float(perm_ztrain[0].std())
+	y2 = round(np.max(np.concatenate((ztrain, (perm_ztrain).flatten()))),2) + float(perm_ztrain[0].std())
+	for c in range(model.n_components_):
+		plt.subplot(1, n_plots, p_num)
+		jitter = np.random.normal(0, scale = 0.1, size=n_jitters)
+		rand_dots =  np.random.permutation(perm_ztrain[c])[:n_jitters]
+		plt.scatter(jitter, rand_dots, marker = '.', alpha = 0.3)
+		plt.xlim(-.5, .5)
+		plt.title("Component %d" % (c+1))
+		plt.scatter(0, ztrain[c], marker = 'o', alpha = 1.0, c = 'k')
+		plt.xticks(color='w')
+		plt.ylim(y1, y2)
+		if model.perm_stat_train_p_[c] == 0:
+			plt.xlabel("z = %1.2f, p $<$ %1.2e" % (model.perm_stat_train_z_[c], (1 / model.n_permutations)), fontsize=10)
+		elif model.perm_stat_train_p_[c] > 0.001:
+			plt.xlabel("z = %1.2f, p = %1.3f" % (model.perm_stat_train_z_[c], model.perm_stat_train_p_[c]), fontsize=10)
+		else:
+			plt.xlabel("z = %1.2f, p = %1.2e" % (model.perm_stat_train_z_[c], model.perm_stat_train_p_[c]), fontsize=10)
+		p_num += 1
+	if png_basename is not None:
+		plt.savefig("%s_model_fit_to_train.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
+
+
+
