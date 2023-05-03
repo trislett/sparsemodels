@@ -188,6 +188,19 @@ def regression_metric_function(metric = 'r2_score', multioutput = 'uniform_avera
 		return(custom_function)
 
 
+def vip(model):
+  t = model.x_scores_
+  w = model.x_weights_
+  q = model.y_loadings_
+  p, h = w.shape
+  vips = np.zeros((p,))
+  s = np.diag(t.T @ t @ q.T @ q).reshape(h, -1)
+  total_s = np.sum(s)
+  for i in range(p):
+      weight = np.array([ (w[i,j] / np.linalg.norm(w[:,j]))**2 for j in range(h) ])
+      vips[i] = np.sqrt(p*(s.T @ weight)/total_s)
+  return(vips)
+
 # Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
 	"""
@@ -1335,7 +1348,41 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
-	
+	def _bootstrap_model_coefficients(self, n_bootstraps = 1000, tol = 1e-3, outer = False):
+		if seed is None:
+			np.random.seed(np.random.randint(4294967295))
+		else:
+			np.random.seed(seed)
+		for attempt in range(10):
+			try:
+				bviews = self.bootstrap_views(self.views_train_)
+				permute_views(views_train)
+				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = self.l1_sparsity_,
+											n_comp = self.n_components_,
+											scheme = self.scheme,
+											scale = True,
+											init = "svd",
+											bias = True,
+											tol = tol).fit(bviews, verbose = False)
+			except:
+				print("Error in permuted model. Reshuffling try %d/10" % (attempt+1))
+				np.random.seed(seed+1)
+				bviews = self.bootstrap_views(self.views_train_)
+				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = self.l1_sparsity_,
+											n_comp = self.n_components_,
+											scheme = self.scheme,
+											scale = True,
+											init = "svd",
+											bias = True,
+											tol = tol).fit(bviews, verbose = False)
+		if outer:
+			return([wt for wt in bmdl.weights_outer_])
+		else:
+			return([wt for wt in bmdl.weights_])
+		
+
 	def bootstrap_model_loadings(self, n_bootstraps = 10000, bootstrap_training_loading = False):
 		print("[Training Data]")
 		lbs_pval_, lbs_CI_025_, lbs_CI_975_ = self.bootstrap_dataview_loadings(dataviews = self.views_train_, n_bootstraps = n_bootstraps)
