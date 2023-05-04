@@ -621,16 +621,18 @@ class sgcca_rwrapper:
 		return(crit)
 
 class parallel_sgcca():
-	def __init__(self, n_jobs = 12, design_matrix = None, scheme = "centroid", n_permutations = 10000):
+	def __init__(self, n_jobs = 12, n_permutations = 10000, design_matrix = None, initialization = "svd", scheme = "factorial", scale_views = True):
 		"""
 		Main SGCCA function
 		"""
 		self.n_jobs = n_jobs
 		self.n_permutations = n_permutations
 		self.design_matrix = design_matrix
-		assert scheme in np.array(["horst", "factorial", "centroid"]), "Error: %s is not a valid scheme option. Must be: horst, factorial, or centroid" % scheme
+		assert scheme in np.array(["horst", "factorial", "centroid"]), "Error: %s is not a valid scheme option. Must be: horst, centroid, or factorial." % scheme
 		self.scheme = scheme
-
+		assert initialization in np.array(["svd", "random"]), "Error: %s is not a valid initialization option. Must be: svd (default), or random." % scheme
+		self.initialization = initialization
+		self.scale_views = scale_views
 	def _check_design_matrix(self, n_views):
 		if self.design_matrix is None:
 			self.design_matrix = 1 - np.identity(n_views)
@@ -970,8 +972,8 @@ class parallel_sgcca():
 											l1_sparsity = l1,
 											n_comp = n_comp,
 											scheme = self.scheme,
-											scale = True,
-											init = "svd",
+											scale = self.scale_views,
+											init = self.initialization,
 											bias = True,
 											tol = tol).fit(pviews, verbose = False)
 			except:
@@ -982,8 +984,8 @@ class parallel_sgcca():
 											l1_sparsity = l1,
 											n_comp = n_comp,
 											scheme = self.scheme,
-											scale = True,
-											init = "svd",
+											scale = self.scale_views,
+											init = self.initialization,
 											bias = True,
 											tol = tol).fit(pviews, verbose = False)
 			else:
@@ -1059,8 +1061,8 @@ class parallel_sgcca():
 									l1_sparsity = self.l1_sparsity_,
 									n_comp = self.n_components_,
 									scheme = self.scheme,
-									scale = True,
-									init = "svd",
+									scale = self.scale_views,
+									init = self.initialization,
 									bias = True,
 									tol = 1e-8).fit(self.views_train_)
 		train_scores = mdl.transform(self.views_train_, outer = outer)
@@ -1147,8 +1149,8 @@ class parallel_sgcca():
 										l1_sparsity = l1,
 										n_comp = 1,
 										scheme = self.scheme,
-										scale = True,
-										init = "svd",
+										scale = self.scale_views,
+										init = self.initialization,
 										bias = True,
 										tol = tol).fit(views_train)
 			parameterselection_l1_penalties.append(mdl.l1_sparsity)
@@ -1263,6 +1265,8 @@ class parallel_sgcca():
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = l1_sparsity,
 									n_comp = n_components,
+									init = self.initialization,
+									scale = self.scale_views,
 									scheme = self.scheme).fit(self.views_train_)
 		train_scores_, train_loadings_ = mdl.transform(self.views_train_, calculate_loading = True)
 		self.train_scores_ = train_scores_
@@ -1395,8 +1399,8 @@ class parallel_sgcca():
 											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
-											scale = True,
-											init = init,
+											scale = self.scale_views,
+											init = self.initialization,
 											bias = True,
 											tol = tol).fit(bviews, verbose = False)
 			except:
@@ -1408,8 +1412,8 @@ class parallel_sgcca():
 											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
-											scale = True,
-											init = init,
+											scale = self.scale_views,
+											init = self.initialization,
 											bias = True,
 											tol = tol).fit(bviews, verbose = False)
 			else:
@@ -1618,7 +1622,13 @@ def plot_ncomponents(model, views, max_n_comp, l1_sparsity, labels = None, png_b
 		l1_sparsity = np.repeat(l1_sparsity, n_views_)
 	if l1_sparsity.shape != (np.max(max_n_comp), n_views_):
 		l1_sparsity = np.tile(l1_sparsity, np.max(max_n_comp)).reshape(np.max(max_n_comp), n_views_)
-	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix, l1_sparsity = l1_sparsity, n_comp = max_n_comp, scheme = model.scheme, tol=1e-8).fit(views_train_)
+	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix,
+										l1_sparsity = l1_sparsity,
+										n_comp = max_n_comp,
+										init = model.initialization,
+										scale = model.scale_views,
+										scheme = model.scheme,
+										tol=1e-8).fit(views_train_)
 	x_values = np.arange(0, np.max(max_n_comp), 1)
 	if labels is None:
 		labels = ["View %d" % (i+1) for i in range(temp_model.n_views_)]
