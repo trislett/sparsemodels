@@ -1400,7 +1400,8 @@ class parallel_sgcca():
 											bias = True,
 											tol = tol).fit(bviews, verbose = False)
 			except:
-				print("Convergence error in bootstrapped self. Reshuffling. Try %d/10" % (attempt+1))
+				if convergence_warning:
+					print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
 				np.random.seed(seed+1)
 				bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
@@ -1425,7 +1426,7 @@ class parallel_sgcca():
 		else:
 			return(weights)
 
-	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = False):
+	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True):
 		"""
 		Selects important features for each data view using VIP scores.
 		
@@ -1642,6 +1643,7 @@ def plot_ncomponents(model, views, max_n_comp, l1_sparsity, labels = None, png_b
 		plt.close()
 	else:
 		plt.show()
+	plt.rcParams.update(plt.rcParamsDefault)
 
 def plot_parameter_selection(model, xlabel = "Sparsity", ylabel = "Tuning metric (scaled)", L1_penalty_range = np.arange(0.1,1.1,.1), scale_tuning_metric = True, png_basename = None):
 	tmetric = np.array(model.parameterselection_tmetric_)
