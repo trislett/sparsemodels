@@ -1348,15 +1348,13 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
-	def _bootstrap_model_coefficients(self, n_bootstraps = 1000, tol = 1e-3, outer = False):
+	def _bootstrap_model_coefficients(self, tol = 1e-3, outer = False, seed = None):
 		if seed is None:
-			np.random.seed(np.random.randint(4294967295))
-		else:
-			np.random.seed(seed)
+			seed = np.random.randint(4294967295)
+		np.random.seed(seed)
 		for attempt in range(10):
 			try:
 				bviews = self.bootstrap_views(self.views_train_)
-				permute_views(views_train)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = self.l1_sparsity_,
 											n_comp = self.n_components_,
