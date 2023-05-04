@@ -182,24 +182,11 @@ def regression_metric_function(metric = 'r2_score', multioutput = 'uniform_avera
 		elif metric == 'mean_squared_error':
 			metric_function = mean_squared_error
 		else:
-			print("Metric [%s] is not a known function. Use set_function")
+			print("Metric [%s] is not a known function. Use custom_function")
 		return(metric_function)
 	else:
 		return(custom_function)
 
-
-def vip(model):
-  t = model.x_scores_
-  w = model.x_weights_
-  q = model.y_loadings_
-  p, h = w.shape
-  vips = np.zeros((p,))
-  s = np.diag(t.T @ t @ q.T @ q).reshape(h, -1)
-  total_s = np.sum(s)
-  for i in range(p):
-      weight = np.array([ (w[i,j] / np.linalg.norm(w[:,j]))**2 for j in range(h) ])
-      vips[i] = np.sqrt(p*(s.T @ weight)/total_s)
-  return(vips)
 
 # Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
@@ -636,12 +623,13 @@ class parallel_sgcca():
 	def _check_design_matrix(self, n_views):
 		if self.design_matrix is None:
 			self.design_matrix = 1 - np.identity(n_views)
+		if self.design_matrix is None:
 			matidx = np.array(self.design_matrix, bool)
 			matidx[np.tril_indices(n_views)] = False
 			self.matidx_ = matidx
 
 	def _datestamp(self):
-		print("2023_24_04")
+		print("2023_04_05")
 
 	def nfoldsplit_group(self, group, n_fold = 10, holdout = 0, train_index = None, verbose = False, debug_verbose = False, seed = None):
 		"""
