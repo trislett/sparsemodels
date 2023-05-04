@@ -1348,38 +1348,142 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
-	def _bootstrap_model_coefficients(self, tol = 1e-3, outer = False, seed = None):
+	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, return_VIP = False, seed = None):
+		"""
+		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
+
+		Parameters:
+		-----------
+		b: int
+			The index of the bootstrap sample.
+		views: list of arrays or None, default=None
+			The list of views used to compute the weights. If None, the train views are used.
+		l1_sparsity: float or None, default=None
+			The L1 sparsity of the model. If None, the L1 sparsity used in the original model is used.
+		tol: float, default=1e-3
+			The tolerance for the convergence of the optimization algorithm.
+		orthogonal_weights: bool, default=False
+			If True, compute the outer product of the weights. Otherwise, compute the weights directly.
+		init: str, default="svd"
+			The initialization method for the optimization algorithm.
+		convergence_warning: bool, default=True
+			If True, print a convergence error message when the optimization algorithm does not converge.
+		return_VIP: bool, default=False
+			If True, return the variable importance in projection (VIP) scores instead of the weights.
+		seed: int or None, default=None
+			The seed for the random number generator.
+
+		Returns:
+		--------
+		weights: array
+			The weights of the sparse generalized canonical correlation analysis model. Returned only if return_VIP is False.
+		VIP: list of arrays or None
+			The variable importance in projection (VIP) scores for each view. Returned only if return_VIP is True.
+		"""
+		if views is None:
+			views = self.views_train_
+		if l1_sparsity is None:
+			l1_sparsity = self.l1_sparsity_
 		if seed is None:
 			seed = np.random.randint(4294967295)
 		np.random.seed(seed)
+		attempt = 0
 		for attempt in range(10):
 			try:
-				bviews = self.bootstrap_views(self.views_train_)
+				bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
-											l1_sparsity = self.l1_sparsity_,
+											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
 											scale = True,
-											init = "svd",
+											init = init,
 											bias = True,
 											tol = tol).fit(bviews, verbose = False)
 			except:
-				print("Error in permuted model. Reshuffling try %d/10" % (attempt+1))
+				print("Convergence error in bootstrapped self. Reshuffling. Try %d/10" % (attempt+1))
 				np.random.seed(seed+1)
-				bviews = self.bootstrap_views(self.views_train_)
+				bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
-											l1_sparsity = self.l1_sparsity_,
+											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
 											scale = True,
-											init = "svd",
+											init = init,
 											bias = True,
 											tol = tol).fit(bviews, verbose = False)
-		if outer:
-			return([wt for wt in bmdl.weights_outer_])
+			else:
+				break
+		if orthogonal_weights:
+			weights = bmdl.weights_
 		else:
-			return([wt for wt in bmdl.weights_])
+			weights = bmdl.weights_outer_
+		if return_VIP:
+			VIP = []
+			for v in range(self.n_views_):
+				VIP.append(np.sum([(bmdl.weights_[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
+			return(VIP)
+		else:
+			return(weights)
+
+	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = False):
+		"""
+		Selects important features for each data view using VIP scores.
 		
+		Parameters:
+		-----------
+		n_bootstraps : int, optional (default=1000)
+			Number of bootstraps to perform for VIP score calculation.
+		n_keep_variables : array-like or None, optional (default=None)
+			Number of variables to keep per data view. If None, the number of variables is selected based on the non-zero
+			weights in the model.
+		tol : float, optional (default=1e-5)
+			Tolerance for convergence during bootstrap iterations.
+		orthogonal_weights : bool, optional (default=True)
+			Whether to use orthogonal weights during bootstrap iterations.
+			
+		Returns:
+		--------
+		None
+		
+		"""
+		assert hasattr(self,'model_obj_'), "Error: run fit_model"
+		if n_keep_variables is None:
+			n_keep_variables = np.zeros((self.n_views_), int)
+			for v in range(self.n_views_):
+				# selects the number variables that have non-zero weights in the model
+				n_keep_variables[v] = np.sum(np.mean(self.selected_variables_[v] != 0,1) != 0)
+		assert len(n_keep_variables) == self.n_views_, "Error: n_keep_variables must have be an array with length of n_views (i.e. the number of variables to keep per data view) or None."
+		seeds = generate_seeds(n_bootstraps)
+		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+					delayed(self._bootstrap_model_coefficients)(b = b,
+														tol = tol,
+														orthogonal_weights = orthogonal_weights,
+														return_VIP = True,
+														convergence_warning = False,
+														seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
+		selected_vars = []
+		vip_scores = []
+		for v in range(self.n_views_):
+			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0]))
+			for b in range(n_bootstraps):
+				bs_wts[b] = output[b][v]
+			vip_score = np.mean(bs_wts,0)
+			vip_threshold = np.sort(vip_score)[::-1][n_keep_variables[v]]
+			selected_vars.append(vip_score > vip_threshold)
+			vip_scores.append(vip_score)
+		selected_views_ = []
+		selected_views_train_= []
+		selected_views_test_= []
+		for v in range(self.n_views_):
+			selected_views_.append(self.views_[v][:,selected_vars[v]])
+			selected_views_train_.append(self.views_train_[v][:,selected_vars[v]])
+			selected_views_test_.append(self.views_test_[v][:,selected_vars[v]])
+		self.original_model_obj_ = self.model_obj_
+		self.original_views_= self.views_
+		# fit the feature selected self.
+		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
+		self.feature_selection_vip_scores_ = vip_scores
+		self.feature_selection_variables_index_ = selected_vars
 
 	def bootstrap_model_loadings(self, n_bootstraps = 10000, bootstrap_training_loading = False):
 		print("[Training Data]")
