@@ -623,7 +623,7 @@ class parallel_sgcca():
 	def _check_design_matrix(self, n_views):
 		if self.design_matrix is None:
 			self.design_matrix = 1 - np.identity(n_views)
-		if self.matidx_ is None:
+		if not hasattr(self, 'matidx_'):
 			matidx = np.array(self.design_matrix, bool)
 			matidx[np.tril_indices(n_views)] = False
 			self.matidx_ = matidx
