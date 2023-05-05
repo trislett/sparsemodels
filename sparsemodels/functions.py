@@ -1413,12 +1413,12 @@ class parallel_sgcca():
 		if return_VIP:
 			VIP = []
 			for v in range(self.n_views_):
-				VIP.append(np.sum([(bmdl.weights_[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
-			return(VIP)
+				VIP.append(np.sum([(weights[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
 		else:
-			return(weights)
+			VIP = None
+		return(weights, VIP)
 
-	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True):
+	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
 		"""
 		Selects important features for each data view using VIP scores.
 		
@@ -1447,7 +1447,7 @@ class parallel_sgcca():
 				n_keep_variables[v] = np.sum(np.mean(self.selected_variables_[v] != 0,1) != 0)
 		assert len(n_keep_variables) == self.n_views_, "Error: n_keep_variables must have be an array with length of n_views (i.e. the number of variables to keep per data view) or None."
 		seeds = generate_seeds(n_bootstraps)
-		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+		output_wt, output_vip = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 					delayed(self._bootstrap_model_coefficients)(b = b,
 														tol = tol,
 														orthogonal_weights = orthogonal_weights,
@@ -1459,7 +1459,7 @@ class parallel_sgcca():
 		for v in range(self.n_views_):
 			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0]))
 			for b in range(n_bootstraps):
-				bs_wts[b] = output[b][v]
+				bs_wts[b] = output_vip[b][v]
 			vip_score = np.mean(bs_wts,0)
 			vip_threshold = np.sort(vip_score)[::-1][n_keep_variables[v]]
 			selected_vars.append(vip_score > vip_threshold)
@@ -1473,8 +1473,9 @@ class parallel_sgcca():
 			selected_views_test_.append(self.views_test_[v][:,selected_vars[v]])
 		self.original_model_obj_ = self.model_obj_
 		self.original_views_= self.views_
-		# fit the feature selected self.
+		# fit the feature selected model
 		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
+		self.feature_selection_bootstrapped_weights_ = output_wt
 		self.feature_selection_vip_scores_ = vip_scores
 		self.feature_selection_variables_index_ = selected_vars
 
