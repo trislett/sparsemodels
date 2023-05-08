@@ -1413,7 +1413,7 @@ class parallel_sgcca():
 		if return_VIP:
 			VIP = []
 			for v in range(self.n_views_):
-				VIP.append(np.sum([np.divide((weights[v][:,c]**2)*bmdl.AVE_views_[v][c], bmdl.AVE_inner_[c]**2) for c in range(self.n_components_)], 0))
+				VIP.append(np.sum([(weights[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
 		else:
 			VIP = None
 		return(weights, VIP)
