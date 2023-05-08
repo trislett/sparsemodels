@@ -1413,7 +1413,7 @@ class parallel_sgcca():
 		if return_VIP:
 			VIP = []
 			for v in range(self.n_views_):
-				VIP.append(np.sum([(weights[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
+				VIP.append(np.sum([np.divide((weights[v][:,c]**2)*bmdl.AVE_views_[v][c], bmdl.AVE_inner_[c]**2) for c in range(self.n_components_)], 0))
 		else:
 			VIP = None
 		return(weights, VIP)
@@ -1448,7 +1448,7 @@ class parallel_sgcca():
 
 	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
 		"""
-		Selects important features for each data view using VIP scores.
+		Selects important features for each data view using Variable Importance in the Projection (VIP) scores.
 		
 		Parameters:
 		-----------
@@ -1485,16 +1485,23 @@ class parallel_sgcca():
 		output_wt, output_vip = zip(*output)
 		selected_vars = []
 		vip_scores = []
+		vip_scores_std = []
+		vip_scores_std_z = []
 		for v in range(self.n_views_):
 			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0]))
 			for b in range(n_bootstraps):
 				bs_wts[b] = output_vip[b][v]
 			vip_score = np.mean(bs_wts,0)
+			vip_score_std = np.std(bs_wts,0)
 			vip_threshold = np.sort(vip_score)[::-1][n_keep_variables[v]]
 			selected_vars.append(vip_score > vip_threshold)
 			vip_scores.append(vip_score)
+			vip_scores_std.append(vip_score_std)
+			vip_scores_std_z.append(np.divide(vip_score, vip_score_std))
 		self.feature_selection_bootstrapped_weights_ = output_wt
 		self.feature_selection_vip_scores_ = vip_scores
+		self.feature_selection_vip_scores_std_ = vip_scores_std
+		self.feature_selection_vip_scores_zstat_ = vip_scores_std_z
 		self.feature_selection_variables_index_ = selected_vars
 		# fit the feature selected model
 		if fit_feature_selected_model:
