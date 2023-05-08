@@ -187,7 +187,7 @@ def regression_metric_function(metric = 'r2_score', multioutput = 'uniform_avera
 	else:
 		return(custom_function)
 
-def vip(model_scores, model_loadings, model_weights, response_index, predictor_index):
+def calculate_variable_importance_projection(model_scores, model_loadings, model_weights, response_index, predictor_index):
 	"""
 	Calculate the Variable Importance in Projection (VIP) scores for a given predictor variable.
 
@@ -216,14 +216,13 @@ def vip(model_scores, model_loadings, model_weights, response_index, predictor_i
 	w = model_weights[predictor_index]
 	q = model_loadings[response_index]
 	n_variables, n_components = w.shape
-	vips = np.zeros((n_variables,))
+	vips = np.zeros((n_variables))
 	s = np.diag(t.T @ t @ q.T @ q).reshape(n_components,-1)
 	total_s = np.sum(s)
 	for i in range(n_variables):
 		weight = np.array([(w[i,j] / np.linalg.norm(w[:,j]))**2 for j in range(n_components)])
 		vips[i] = np.sqrt(n_variables*(s.T @ weight)/total_s)
 	return(vips)
-
 
 # Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
@@ -807,7 +806,7 @@ class parallel_sgcca():
 			subsetdata.append(views[v][indices])
 		return(subsetdata)
 
-	def bootstrap_views(self, views, seed = None):
+	def bootstrap_views(self, views, sample_proportion = 1., with_replacement = True, seed = None):
 		"""
 		Bootstraps with replacement the rows of each view in the input list of views (or scores).
 
@@ -830,7 +829,7 @@ class parallel_sgcca():
 			np.random.seed(seed)
 		
 		n = len(views[0])
-		indices = np.random.choice(n, size=n, replace=True)
+		indices = np.random.choice(n, size=int(n*sample_proportion), replace=with_replacement)
 		bsviews = []
 		for v in range(len(views)):
 			bsviews.append(views[v][indices])
@@ -1377,7 +1376,7 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
-	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, return_VIP = False, dependent_index = None, seed = None):
+	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, subsampling = False, seed = None):
 		"""
 		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
 
@@ -1406,8 +1405,6 @@ class parallel_sgcca():
 		--------
 		weights: array
 			The weights of the sparse generalized canonical correlation analysis model. Returned only if return_VIP is False.
-		VIP: list of arrays or None
-			The variable importance in projection (VIP) scores for each view. Returned only if return_VIP is True.
 		"""
 		if views is None:
 			views = self.views_train_
@@ -1419,7 +1416,10 @@ class parallel_sgcca():
 		attempt = 0
 		for attempt in range(10):
 			try:
-				bviews = self.bootstrap_views(views)
+				if subsampling:
+					bviews = self.bootstrap_views(self, views, sample_proportion = .5, with_replacement = False, seed = None)
+				else:
+					bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
@@ -1431,7 +1431,10 @@ class parallel_sgcca():
 			except:
 				if convergence_warning:
 					print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
-				np.random.seed(seed+1)
+				if subsampling:
+					bviews = self.bootstrap_views(self, views, sample_proportion = .5, with_replacement = False, seed = np.random.randint(4294967295))
+				else:
+					bviews = self.bootstrap_views(views, seed = np.random.randint(4294967295))
 				bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1_sparsity,
@@ -1447,34 +1450,15 @@ class parallel_sgcca():
 			weights = bmdl.weights_
 		else:
 			weights = bmdl.weights_outer_
-		if return_VIP:
-			assert dependent_index is not None, "Error: a dependent data view index is necessary for VIP scores"
-			model_scores, model_loadings = bmdl.transform(bviews, calculate_loading=True, outer=True)
-			model_weights = bmdl.weights_outer_
-			VIP = []
-			view_indices = np.arange(0, bmdl.n_views_, 1)
-			independent_indicies = view_indices[view_indices != dependent_index]
-			for v in view_indices:
-				if v == dependent_index:
-					vips = np.zeros((bmdl.n_views_ -1, bmdl.model_obj_.views_[0].shape[1]))
-					for i, indep_view in enumerate(independent_indicies):
-						# backwards VIPs
-						vips[i] = vip(model_scores, model_loadings, model_weights, response_index = indep_view, predictor_index = dependent_index)
-					VIP.append(vips.mean(0))
-				else:
-					VIP.append(vip(model_scores, model_loadings, model_weights, response_index = dependent_index, predictor_index = v))
-		else:
-			VIP = None
-		return(weights, VIP)
+		return(weights)
 
-	def fit_selected_model(self, n_keep_variables = None):
+	def fit_selected_model(self):
 		"""
 		Fits a new model using the selected features.
 		
 		Parameters:
 		-----------
-		n_keep_variables : array or None, optional (default=None)
-			The number of features to keep for each view. If None, it will be the number of variables with non-zero weights in the original model.
+		None
 		
 		Returns:
 		--------
@@ -1482,12 +1466,6 @@ class parallel_sgcca():
 		"""
 		# Check if feature selection has been performed
 		assert hasattr(self,'feature_selection_variables_index_'), "Error: feature selection not found."
-		if n_keep_variables is not None:
-			selected_vars = []
-			for v in range(self.n_views_):
-				vip_threshold = np.sort(self.feature_selection_vip_scores_[v])[::-1][n_keep_variables[v]]
-				selected_vars.append(self.feature_selection_vip_scores_[v] > vip_threshold)
-			self.feature_selection_variables_index_ = selected_vars
 		selected_views_ = []
 		for v in range(self.n_views_):
 			selected_views_.append(self.views_[v][:,self.feature_selection_variables_index_[v]])
@@ -1495,9 +1473,9 @@ class parallel_sgcca():
 		self.original_views_= self.views_
 		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
 
-	def run_parallel_feature_selection(self, dependent_index, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
+	def run_parallel_stability_selection(self, n_bootstraps = 1000, consistency_threshold = 0.9, tol = 1e-5, orthogonal_weights = False, fit_feature_selected_model = True):
 		"""
-		Selects important features for each data view using Variable Importance in the Projection (VIP) scores.
+		Stability Selection.
 		
 		Parameters:
 		-----------
@@ -1505,9 +1483,8 @@ class parallel_sgcca():
 			The dependent data view index
 		n_bootstraps : int, optional (default=1000)
 			Number of bootstraps to perform for VIP score calculation.
-		n_keep_variables : array-like or None, optional (default=None)
-			Number of variables to keep per data view. If None, the number of variables is selected based on the non-zero
-			weights in the model.
+		consistency_threshold: float (between >0 and 1.)
+			The selection threshold for the proportion of models that have non-zero weights for the variable.
 		tol : float, optional (default=1e-5)
 			Tolerance for convergence during bootstrap iterations.
 		orthogonal_weights : bool, optional (default=True)
@@ -1519,40 +1496,33 @@ class parallel_sgcca():
 		
 		"""
 		assert hasattr(self,'model_obj_'), "Error: run fit_model"
-		if n_keep_variables is None:
-			n_keep_variables = np.zeros((self.n_views_), int)
-			for v in range(self.n_views_):
-				# selects the number variables that have non-zero weights in the model
-				n_keep_variables[v] = np.sum(np.mean(self.selected_variables_[v] != 0,1) != 0)
-		assert len(n_keep_variables) == self.n_views_, "Error: n_keep_variables must have be an array with length of n_views (i.e. the number of variables to keep per data view) or None."
 		seeds = generate_seeds(n_bootstraps)
-		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+		output_wt = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 					delayed(self._bootstrap_model_coefficients)(b = b,
 														tol = tol,
 														orthogonal_weights = orthogonal_weights,
-														return_VIP = True,
 														convergence_warning = False,
+														subsampling = True,
 														seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
-		output_wt, output_vip = zip(*output)
 		selected_vars = []
-		vip_scores = []
-		vip_scores_std = []
-		vip_scores_std_z = []
+		selected_mean = []
+		selected_std = []
+		selected_z = []
 		for v in range(self.n_views_):
 			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0]))
 			for b in range(n_bootstraps):
-				bs_wts[b] = output_vip[b][v]
-			vip_score = np.mean(bs_wts,0)
-			vip_score_std = np.std(bs_wts,0)
-			vip_threshold = np.sort(vip_score)[::-1][n_keep_variables[v]]
-			selected_vars.append(vip_score > vip_threshold)
-			vip_scores.append(vip_score)
-			vip_scores_std.append(vip_score_std)
-			vip_scores_std_z.append(np.divide(vip_score, vip_score_std))
+				bs_wts[b] = (np.sum(output_wt[b][v] != 0,1) != 0)*1
+			sel_mean = np.mean(bs_wts,0)
+			sel_std = np.std(bs_wts,0)
+			sel_z = sel_mean / sel_std
+			selected_mean.append(sel_mean)
+			selected_std.append(sel_std)
+			selected_z.append(sel_z)
+			selected_vars.append(sel_mean > consistency_threshold)
 		self.feature_selection_bootstrapped_weights_ = output_wt
-		self.feature_selection_vip_scores_ = vip_scores
-		self.feature_selection_vip_scores_std_ = vip_scores_std
-		self.feature_selection_vip_scores_zstat_ = vip_scores_std_z
+		self.feature_selection_scores_ = selected_mean
+		self.feature_selection_scores_std_ = selected_std
+		self.feature_selection_scores_zstat_ = selected_z
 		self.feature_selection_variables_index_ = selected_vars
 		# fit the feature selected model
 		if fit_feature_selected_model:
@@ -1952,5 +1922,106 @@ def plot_permuted_model(model, png_basename = None, n_jitters = 1000, scale_valu
 	else:
 		plt.show()
 
+
+### 
+
+	# Candidate functions
+	def _old_bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, return_VIP = False, dependent_index = None, seed = None):
+		"""
+		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
+
+		Parameters:
+		-----------
+		b: int
+			The index of the bootstrap sample.
+		views: list of arrays or None, default=None
+			The list of views used to compute the weights. If None, the train views are used.
+		l1_sparsity: float or None, default=None
+			The L1 sparsity of the model. If None, the L1 sparsity used in the original model is used.
+		tol: float, default=1e-3
+			The tolerance for the convergence of the optimization algorithm.
+		orthogonal_weights: bool, default=False
+			If True, compute the outer product of the weights. Otherwise, compute the weights directly.
+		init: str, default="svd"
+			The initialization method for the optimization algorithm.
+		convergence_warning: bool, default=True
+			If True, print a convergence error message when the optimization algorithm does not converge.
+		return_VIP: bool, default=False
+			If True, return the variable importance in projection (VIP) scores instead of the weights.
+		seed: int or None, default=None
+			The seed for the random number generator.
+
+		Returns:
+		--------
+		weights: array
+			The weights of the sparse generalized canonical correlation analysis model. Returned only if return_VIP is False.
+		VIP: list of arrays or None
+			The variable importance in projection (VIP) scores for each view. Returned only if return_VIP is True.
+		"""
+		if views is None:
+			views = self.views_train_
+		if l1_sparsity is None:
+			l1_sparsity = self.l1_sparsity_
+		if seed is None:
+			seed = np.random.randint(4294967295)
+		np.random.seed(seed)
+		attempt = 0
+		for attempt in range(10):
+			try:
+				bviews = self.bootstrap_views(views)
+				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = l1_sparsity,
+											n_comp = self.n_components_,
+											scheme = self.scheme,
+											scale = self.scale_views,
+											init = self.initialization,
+											bias = True,
+											tol = tol).fit(bviews, verbose = False)
+			except:
+				if convergence_warning:
+					print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
+				np.random.seed(seed+1)
+				bviews = self.bootstrap_views(views)
+				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
+											l1_sparsity = l1_sparsity,
+											n_comp = self.n_components_,
+											scheme = self.scheme,
+											scale = self.scale_views,
+											init = self.initialization,
+											bias = True,
+											tol = tol).fit(bviews, verbose = False)
+			else:
+				break
+		if orthogonal_weights:
+			weights = bmdl.weights_
+		else:
+			weights = bmdl.weights_outer_
+		if return_VIP:
+			assert dependent_index is not None, "Error: a dependent data view index is necessary for VIP scores"
+			model_scores, model_loadings = bmdl.transform(bviews, calculate_loading=True)
+			model_weights = bmdl.weights_
+			VIP = []
+			view_indices = np.arange(0, bmdl.n_views_, 1)
+			independent_indicies = view_indices[view_indices != dependent_index]
+			for v in view_indices:
+				if v == dependent_index:
+					vips = np.zeros((bmdl.n_views_ -1, bmdl.views_[0].shape[1]))
+					for i, indep_view in enumerate(independent_indicies):
+						# backwards VIPs
+						vips[i] = calculate_variable_importance_projection(model_scores = model_scores,
+																							model_loadings = model_loadings,
+																							model_weights = model_weights,
+																							response_index = indep_view,
+																							predictor_index = dependent_index)
+					VIP.append(vips.mean(0))
+				else:
+					VIP.append(calculate_variable_importance_projection(model_scores = model_scores,
+																						model_loadings = model_loadings,
+																						model_weights = model_weights,
+																						response_index = dependent_index,
+																						predictor_index = v))
+		else:
+			VIP = None
+		return(weights, VIP)
 
 
