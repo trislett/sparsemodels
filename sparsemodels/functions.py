@@ -1418,6 +1418,34 @@ class parallel_sgcca():
 			VIP = None
 		return(weights, VIP)
 
+	def fit_selected_model(self, n_keep_variables = None):
+		"""
+		Fits a new model using the selected features.
+		
+		Parameters:
+		-----------
+		n_keep_variables : array or None, optional (default=None)
+			The number of features to keep for each view. If None, it will be the number of variables with non-zero weights in the original model.
+		
+		Returns:
+		--------
+		None
+		"""
+		# Check if feature selection has been performed
+		assert hasattr(self,'feature_selection_variables_index_'), "Error: feature selection not found."
+		if n_keep_variables is not None:
+			selected_vars = []
+			for v in range(self.n_views_):
+				vip_threshold = np.sort(self.feature_selection_vip_scores_[v])[::-1][n_keep_variables[v]]
+				selected_vars.append(self.feature_selection_vip_scores_[v] > vip_threshold)
+			self.feature_selection_variables_index_ = selected_vars
+		selected_views_ = []
+		for v in range(self.n_views_):
+			selected_views_.append(self.views_[v][:,self.feature_selection_variables_index_[v]])
+		self.original_model_obj_ = self.model_obj_
+		self.original_views_= self.views_
+		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
+
 	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
 		"""
 		Selects important features for each data view using VIP scores.
@@ -1447,13 +1475,14 @@ class parallel_sgcca():
 				n_keep_variables[v] = np.sum(np.mean(self.selected_variables_[v] != 0,1) != 0)
 		assert len(n_keep_variables) == self.n_views_, "Error: n_keep_variables must have be an array with length of n_views (i.e. the number of variables to keep per data view) or None."
 		seeds = generate_seeds(n_bootstraps)
-		output_wt, output_vip = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 					delayed(self._bootstrap_model_coefficients)(b = b,
 														tol = tol,
 														orthogonal_weights = orthogonal_weights,
 														return_VIP = True,
 														convergence_warning = False,
 														seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
+		output_wt, output_vip = zip(*output)
 		selected_vars = []
 		vip_scores = []
 		for v in range(self.n_views_):
@@ -1464,20 +1493,12 @@ class parallel_sgcca():
 			vip_threshold = np.sort(vip_score)[::-1][n_keep_variables[v]]
 			selected_vars.append(vip_score > vip_threshold)
 			vip_scores.append(vip_score)
-		selected_views_ = []
-		selected_views_train_= []
-		selected_views_test_= []
-		for v in range(self.n_views_):
-			selected_views_.append(self.views_[v][:,selected_vars[v]])
-			selected_views_train_.append(self.views_train_[v][:,selected_vars[v]])
-			selected_views_test_.append(self.views_test_[v][:,selected_vars[v]])
-		self.original_model_obj_ = self.model_obj_
-		self.original_views_= self.views_
-		# fit the feature selected model
-		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
 		self.feature_selection_bootstrapped_weights_ = output_wt
 		self.feature_selection_vip_scores_ = vip_scores
 		self.feature_selection_variables_index_ = selected_vars
+		# fit the feature selected model
+		if fit_feature_selected_model:
+			self.fit_selected_model()
 
 	def bootstrap_model_loadings(self, n_bootstraps = 10000, bootstrap_training_loading = False):
 		print("[Training Data]")
