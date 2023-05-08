@@ -187,6 +187,43 @@ def regression_metric_function(metric = 'r2_score', multioutput = 'uniform_avera
 	else:
 		return(custom_function)
 
+def vip(model_scores, model_loadings, model_weights, response_index, predictor_index):
+	"""
+	Calculate the Variable Importance in Projection (VIP) scores for a given predictor variable.
+
+	Parameters:
+	-----------
+	model_scores : ndarray
+		A 3D array of shape (n_predictors, n_samples, n_components) containing the model scores.
+	model_loadings : ndarray
+		A 2D array of shape (n_responses, n_components) containing the model loadings.
+	model_weights : ndarray
+		A 3D array of shape (n_predictors, n_components, n_views) containing the model weights.
+	response_index : int
+		The index of the response variable for which to calculate the VIP scores.
+	predictor_index : int
+		The index of the predictor variable for which to calculate the VIP scores.
+
+	Returns:
+	-----------
+	vips : ndarray
+		A 1D array of shape (n_predictors,) containing the VIP scores for each predictor variable.
+	"""
+	# adapted from the comment here by gilliM: https://github.com/scikit-learn/scikit-learn/issues/7050
+	# model_scores, model_loadings = mdl.transform(mdl.views_, calculate_loading=True, outer=True)
+	# model_weights = mdl.weights_outer_
+	t = model_scores[predictor_index,:,:]
+	w = model_weights[predictor_index]
+	q = model_loadings[response_index]
+	n_variables, n_components = w.shape
+	vips = np.zeros((n_variables,))
+	s = np.diag(t.T @ t @ q.T @ q).reshape(n_components,-1)
+	total_s = np.sum(s)
+	for i in range(n_variables):
+		weight = np.array([(w[i,j] / np.linalg.norm(w[:,j]))**2 for j in range(n_components)])
+		vips[i] = np.sqrt(n_variables*(s.T @ weight)/total_s)
+	return(vips)
+
 
 # Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
@@ -1340,7 +1377,7 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
 	# Candidate functions
-	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, return_VIP = False, seed = None):
+	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, return_VIP = False, dependent_index = None, seed = None):
 		"""
 		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
 
@@ -1411,9 +1448,21 @@ class parallel_sgcca():
 		else:
 			weights = bmdl.weights_outer_
 		if return_VIP:
+			assert dependent_index is not None, "Error: a dependent data view index is necessary for VIP scores"
+			model_scores, model_loadings = bmdl.transform(bviews, calculate_loading=True, outer=True)
+			model_weights = bmdl.weights_outer_
 			VIP = []
-			for v in range(self.n_views_):
-				VIP.append(np.sum([(weights[v][:,c]**2)*bmdl.AVE_views_[v][c] for c in range(self.n_components_)], 0))
+			view_indices = np.arange(0, bmdl.n_views_, 1)
+			independent_indicies = view_indices[view_indices != dependent_index]
+			for v in view_indices:
+				if v == dependent_index:
+					vips = np.zeros((bmdl.n_views_ -1, bmdl.model_obj_.views_[0].shape[1]))
+					for i, indep_view in enumerate(independent_indicies):
+						# backwards VIPs
+						vips[i] = vip(model_scores, model_loadings, model_weights, response_index = indep_view, predictor_index = dependent_index)
+					VIP.append(vips.mean(0))
+				else:
+					VIP.append(vip(model_scores, model_loadings, model_weights, response_index = dependent_index, predictor_index = v))
 		else:
 			VIP = None
 		return(weights, VIP)
@@ -1446,12 +1495,14 @@ class parallel_sgcca():
 		self.original_views_= self.views_
 		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
 
-	def run_parallel_feature_selection(self, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
+	def run_parallel_feature_selection(self, dependent_index, n_bootstraps = 1000, n_keep_variables = None, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True):
 		"""
 		Selects important features for each data view using Variable Importance in the Projection (VIP) scores.
 		
 		Parameters:
 		-----------
+		dependent_index : int
+			The dependent data view index
 		n_bootstraps : int, optional (default=1000)
 			Number of bootstraps to perform for VIP score calculation.
 		n_keep_variables : array-like or None, optional (default=None)
