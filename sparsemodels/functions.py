@@ -1404,7 +1404,7 @@ class parallel_sgcca():
 		Returns:
 		--------
 		weights: array
-			The weights of the sparse generalized canonical correlation analysis model. Returned only if return_VIP is False.
+			The weights of the sparse generalized canonical correlation analysis model.
 		"""
 		if views is None:
 			views = self.views_train_
@@ -1417,7 +1417,7 @@ class parallel_sgcca():
 		for attempt in range(10):
 			try:
 				if subsampling:
-					bviews = self.bootstrap_views(self, views, sample_proportion = .5, with_replacement = False, seed = None)
+					bviews = self.bootstrap_views(views, sample_proportion = 0.5, with_replacement = False)
 				else:
 					bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
@@ -1432,10 +1432,9 @@ class parallel_sgcca():
 				if convergence_warning:
 					print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
 				if subsampling:
-					bviews = self.bootstrap_views(self, views, sample_proportion = .5, with_replacement = False, seed = np.random.randint(4294967295))
+					bviews = self.bootstrap_views(views, sample_proportion = 0.5, with_replacement = False, seed = np.random.randint(4294967295))
 				else:
 					bviews = self.bootstrap_views(views, seed = np.random.randint(4294967295))
-				bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1_sparsity,
 											n_comp = self.n_components_,
@@ -1499,6 +1498,7 @@ class parallel_sgcca():
 		seeds = generate_seeds(n_bootstraps)
 		output_wt = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 					delayed(self._bootstrap_model_coefficients)(b = b,
+														views = None,
 														tol = tol,
 														orthogonal_weights = orthogonal_weights,
 														convergence_warning = False,
@@ -1921,6 +1921,66 @@ def plot_permuted_model(model, png_basename = None, n_jitters = 1000, scale_valu
 		plt.close()
 	else:
 		plt.show()
+
+def plot_permuted_model_violin(model, ylabel_metric = "Inner Correlation Metric (scaled)", scale_values = True, png_basename = None):
+
+	if scale_values:
+		ztrain = np.array(model.perm_stat_train_z_)
+		perm_ztrain = np.zeros_like(model.perm_statstar_train_).T
+		for c in range(model.n_components_):
+			perm_ztrain[c] = (model.perm_statstar_train_[:,c] - model.perm_statstar_train_[:,c].mean()) / model.perm_statstar_train_[:,c].std()
+		ztest = np.array(model.perm_stat_test_z_)
+		perm_ztest = np.zeros_like(model.perm_statstar_test_).T
+		for c in range(model.n_components_):
+			perm_ztest[c] = (model.perm_statstar_test_[:,c] - model.perm_statstar_test_[:,c].mean()) / model.perm_statstar_test_[:,c].std()
+	else:
+		ztrain = np.array(model.perm_stat_train_)
+		perm_ztrain = np.array(model.perm_statstar_train_).T
+		ztest = np.array(model.perm_stat_test_)
+		perm_ztest = np.array(model.perm_statstar_test_).T
+
+	tmetric = np.array(ztrain)
+	tmetricstar = np.array(perm_ztrain)
+	n_comp, n_perm = tmetricstar.shape
+	pdPLT_TRAIN = pd.DataFrame()
+	cat = []
+	for c in range(n_comp):
+		cat.append(np.repeat('Component %d' % int(c+1), n_perm))
+	pdPLT_TRAIN['SGCCA Component'] = np.concatenate(cat)
+	pdPLT_TRAIN[ylabel_metric] = np.concatenate(tmetricstar)
+	pdPLT_TRAIN2 = pd.DataFrame()
+	pdPLT_TRAIN2['SGCCA Component'] = ['Component %d' % int(c+1) for c in range(n_comp)]
+	pdPLT_TRAIN2[ylabel_metric] = tmetric
+
+	tmetric = np.array(ztest)
+	tmetricstar = np.array(perm_ztest)
+	pdPLT_TEST = pd.DataFrame()
+	cat = []
+	for c in range(n_comp):
+		cat.append(np.repeat('Component %d' % int(c+1), n_perm))
+	pdPLT_TEST['SGCCA Component'] = np.concatenate(cat)
+	pdPLT_TEST[ylabel_metric] = np.concatenate(tmetricstar)
+	pdPLT_TEST2 = pd.DataFrame()
+	pdPLT_TEST2['SGCCA Component'] = ['Component %d' % int(c+1) for c in range(n_comp)]
+	pdPLT_TEST2[ylabel_metric] = tmetric
+
+	fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(12, 6), sharey=True)
+
+	sns.violinplot(data=pdPLT_TRAIN, y='SGCCA Component', x=ylabel_metric, color='lightgrey', ax=ax1, scale='count')
+	sns.scatterplot(data=pdPLT_TRAIN2, y='SGCCA Component', x=ylabel_metric, color='b', alpha=1.0, zorder=10, ax=ax1)
+
+	sns.violinplot(data=pdPLT_TEST, y='SGCCA Component', x=ylabel_metric, color='lightgrey', ax=ax2, scale='count')
+	sns.scatterplot(data=pdPLT_TEST2, y='SGCCA Component', x=ylabel_metric, color='b', alpha=1.0, zorder=10, ax=ax2)
+	ax1.set_title("Training Sample")
+	ax2.set_title("Test Sample")
+	ax2.set_ylabel('')
+	plt.tight_layout()
+	if png_basename is not None:
+		plt.savefig("%s_permuted_violin_plots.png" % png_basename)
+		plt.close()
+	else:
+		plt.show()
+
 
 
 ### 
