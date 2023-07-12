@@ -281,7 +281,7 @@ class sgcca_rwrapper:
 		self.penalty = "l1"
 		self.tol = tol
 
-	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0):
+	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0, scale_single_view = False):
 		"""
 		Helper function to center and scale the views.
 
@@ -300,14 +300,18 @@ class sgcca_rwrapper:
 			Default value is True.
 		axis : int
 			An integer that specifies the axis to use when computing the mean and standard deviation.
+		scale_single_view : bool
+			Scale just a single dataview
 
 		Returns:
 		--------
 		scaled_views : list of np.ndarrays
 			A list of numpy arrays that represent the scaled views.
+		x : np.ndarray (optional)
+			If a scale_single_view=True, the scaled data view is returned.
 		"""
-		scaled_views = []
-		for x in views:
+		if scale_single_view:
+			x = np.array(views)
 			x_mean = np.mean(x, axis = axis)
 			x_std = np.std(x, axis = axis)
 			if centre:
@@ -316,8 +320,20 @@ class sgcca_rwrapper:
 				x = np.divide(x, x_std)
 			if div_sqrt_numvar:
 				x = np.divide(x, np.sqrt(x.shape[1]))
-			scaled_views.append(x)
-		return(list(scaled_views))
+			return(x)
+		else:
+			scaled_views = []
+			for x in views:
+				x_mean = np.mean(x, axis = axis)
+				x_std = np.std(x, axis = axis)
+				if centre:
+					x = x - x_mean
+				if scale:
+					x = np.divide(x, x_std)
+				if div_sqrt_numvar:
+					x = np.divide(x, np.sqrt(x.shape[1]))
+				scaled_views.append(x)
+			return(list(scaled_views))
 
 	def _rlist_to_nplist(self, robj):
 		"""
@@ -479,7 +495,7 @@ class sgcca_rwrapper:
 				2d array scores with shape (n_subjects, n_components)
 		"""
 		assert view.shape[1] == self.views_[view_index].shape[1], "Error: the input view and model view_index must have the same number variables"
-		X = self.scaleviews(view)
+		X = self.scaleviews(view, scale_single_view = True)
 		scores = np.dot(X, self.weights_[view_index])
 		scores = np.array(scores)
 		return(scores)
@@ -1109,7 +1125,7 @@ class parallel_sgcca():
 			stat_train[:] = mdl.calculate_average_variance_explained(self.views_train_, outer = outer)[2]
 			stat_test[:] = mdl.calculate_average_variance_explained(self.views_test_, outer = outer)[2]
 		else:
-			stat_train[:] = mdl._covariance_criteria(test_scores)
+			stat_train[:] = mdl._covariance_criteria(train_scores)
 			stat_test[:] = mdl._covariance_criteria(test_scores)
 		seeds = generate_seeds(self.n_permutations)
 		output = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
@@ -1481,7 +1497,7 @@ class parallel_sgcca():
 		dependent_index : int
 			The dependent data view index
 		n_bootstraps : int, optional (default=1000)
-			Number of bootstraps to perform for VIP score calculation.
+			Number of bootstraps to perform.
 		consistency_threshold: float (between >0 and 1.)
 			The selection threshold for the proportion of models that have non-zero weights for the variable.
 		tol : float, optional (default=1e-5)
