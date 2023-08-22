@@ -1488,27 +1488,40 @@ class parallel_sgcca():
 		self.original_views_= self.views_
 		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
 
-	def run_parallel_stability_selection(self, n_bootstraps = 1000, consistency_threshold = 0.9, tol = 1e-5, orthogonal_weights = False, fit_feature_selected_model = True):
+	def run_parallel_stability_selection(self, n_bootstraps = 1000, consistency_threshold = 0.9, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True, global_selection = False, use_percentile = False):
 		"""
-		Stability Selection.
+		Performs Stability Selection for feature selection using subsampling and thresholding.
+		
+		References:
+		----------
+			Meinshausen, N., & Buhlmann, P. (2010). Stability selection. Journal of the Royal Statistical Society Series B: Statistical Methodology, 72(4), 417-473.
+			Shah, R. D., & Samworth, R. J. (2013). Variable selection with error control: another look at stability selection. Journal of the Royal Statistical Society Series B: Statistical Methodology, 75(1), 55-80.
 		
 		Parameters:
 		-----------
-		dependent_index : int
-			The dependent data view index
 		n_bootstraps : int, optional (default=1000)
 			Number of bootstraps to perform.
-		consistency_threshold: float (between >0 and 1.)
-			The selection threshold for the proportion of models that have non-zero weights for the variable.
+		consistency_threshold: float, optional (default=0.9)
+			The threshold for the proportion of models that should have non-zero weights for a variable to be considered consistent. Must be in the range [0, 1].
 		tol : float, optional (default=1e-5)
 			Tolerance for convergence during bootstrap iterations.
 		orthogonal_weights : bool, optional (default=True)
-			Whether to use orthogonal weights during bootstrap iterations.
-			
+			If True, use orthogonal weights during bootstrap iterations.
+		fit_feature_selected_model : bool, optional (default=True)
+			If True, fit the feature-selected model using self.fit_selected_model().
+		global_selection : bool, optional (default=False)
+			If True, apply the consistency_threshold as a requirement for non-zero weights across all components.
+		use_percentile : bool, optional (default=False)
+			If True, apply the threshold as a percentile. For example, if the threshold is 0.9, then the top 10% consistent variables will be selected for each component.
 		Returns:
 		--------
 		None
-		
+			Modifies class attributes:
+				self.feature_selection_bootstrapped_weights_
+				self.feature_selection_scores_
+				self.feature_selection_scores_std_
+				self.feature_selection_scores_zstat_
+				self.feature_selection_variables_index_
 		"""
 		assert hasattr(self,'model_obj_'), "Error: run fit_model"
 		seeds = generate_seeds(n_bootstraps)
@@ -1524,23 +1537,41 @@ class parallel_sgcca():
 		selected_mean = []
 		selected_std = []
 		selected_z = []
+		if use_percentile:
+			percentile_thresholds = np.zeros((self.n_components_))
 		for v in range(self.n_views_):
-			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0]))
+			bs_wts = np.zeros((n_bootstraps, self.model_obj_.weights_[v].shape[0], self.model_obj_.weights_[v].shape[1]))
 			for b in range(n_bootstraps):
-				bs_wts[b] = (np.sum(output_wt[b][v] != 0,1) != 0)*1
-			sel_mean = np.mean(bs_wts,0)
-			sel_std = np.std(bs_wts,0)
-			sel_z = sel_mean / sel_std
-			selected_mean.append(sel_mean)
-			selected_std.append(sel_std)
-			selected_z.append(sel_z)
-			selected_vars.append(sel_mean > consistency_threshold)
+				bs_wts[b] = (output_wt[b][v] != 0)*1
+			if global_selection:
+				sel_mean = (bs_wts.sum(2) != 0).mean(0)
+				sel_std = (bs_wts.sum(2) != 0).std(0)
+				sel_z = sel_mean / sel_std
+				selected_mean.append(sel_mean)
+				selected_std.append(sel_std)
+				selected_z.append(sel_z)
+				selected_vars.append(sel_mean > consistency_threshold)
+			else:
+				sel_mean = np.mean(bs_wts, 0)
+				sel_std = np.std(bs_wts, 0)
+				sel_z = sel_mean / sel_std
+				selected_mean.append(sel_mean)
+				selected_std.append(sel_std)
+				selected_z.append(sel_z)
+				if use_percentile:
+					selected_mat = np.zeros((self.model_obj_.weights_[v].shape))
+					for c in range(self.n_components_):
+						percentile_thresholds[c] = np.percentile(np.sort(sel_mean[:,c]), int(consistency_threshold*100))
+					for c in range(self.n_components_):
+						selected_mat[:,c] = (sel_mean[:,c] > percentile_thresholds[c])*1
+					selected_vars.append(selected_mat.sum(1) != 0)
+				else:
+					selected_vars.append(np.sum(sel_mean > consistency_threshold,1))
 		self.feature_selection_bootstrapped_weights_ = output_wt
 		self.feature_selection_scores_ = selected_mean
 		self.feature_selection_scores_std_ = selected_std
 		self.feature_selection_scores_zstat_ = selected_z
 		self.feature_selection_variables_index_ = selected_vars
-		# fit the feature selected model
 		if fit_feature_selected_model:
 			self.fit_selected_model()
 
