@@ -1537,6 +1537,7 @@ class parallel_sgcca():
 		selected_mean = []
 		selected_std = []
 		selected_z = []
+		selected_thresholds = []
 		if use_percentile:
 			percentile_thresholds = np.zeros((self.n_components_))
 		for v in range(self.n_views_):
@@ -1565,7 +1566,7 @@ class parallel_sgcca():
 					for c in range(self.n_components_):
 						selected_mat[:,c] = (sel_mean[:,c] > percentile_thresholds[c])*1
 					selected_vars.append(selected_mat.sum(1) != 0)
-					self.feature_selection_thresholds_ = percentile_thresholds
+					selected_thresholds.append(percentile_thresholds)
 				else:
 					selected_vars.append(np.sum(sel_mean > consistency_threshold,1))
 		self.feature_selection_bootstrapped_weights_ = output_wt
@@ -1573,6 +1574,8 @@ class parallel_sgcca():
 		self.feature_selection_scores_std_ = selected_std
 		self.feature_selection_scores_zstat_ = selected_z
 		self.feature_selection_variables_index_ = selected_vars
+		if use_percentile:
+			self.feature_selection_thresholds_ = selected_thresholds
 		if fit_feature_selected_model:
 			self.fit_selected_model()
 
