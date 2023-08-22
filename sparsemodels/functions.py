@@ -1522,6 +1522,7 @@ class parallel_sgcca():
 				self.feature_selection_scores_std_
 				self.feature_selection_scores_zstat_
 				self.feature_selection_variables_index_
+				(if use_percentile is True) self.feature_selection_thresholds_
 		"""
 		assert hasattr(self,'model_obj_'), "Error: run fit_model"
 		seeds = generate_seeds(n_bootstraps)
