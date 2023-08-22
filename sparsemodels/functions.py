@@ -1565,6 +1565,7 @@ class parallel_sgcca():
 					for c in range(self.n_components_):
 						selected_mat[:,c] = (sel_mean[:,c] > percentile_thresholds[c])*1
 					selected_vars.append(selected_mat.sum(1) != 0)
+					self.feature_selection_thresholds_ = percentile_thresholds
 				else:
 					selected_vars.append(np.sum(sel_mean > consistency_threshold,1))
 		self.feature_selection_bootstrapped_weights_ = output_wt
