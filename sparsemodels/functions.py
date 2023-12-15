@@ -1569,7 +1569,7 @@ class parallel_sgcca():
 					selected_vars.append(selected_mat.sum(1) != 0)
 					selected_thresholds.append(percentile_thresholds)
 				else:
-					selected_vars.append(np.sum(sel_mean > consistency_threshold,1))
+					selected_vars.append((np.sum(sel_mean > consistency_threshold, 1) != 0))
 		self.feature_selection_bootstrapped_weights_ = output_wt
 		self.feature_selection_scores_ = selected_mean
 		self.feature_selection_scores_std_ = selected_std
