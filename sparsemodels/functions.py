@@ -1866,7 +1866,7 @@ def plot_pairscores(model, labels, output_test_scores = False, png_basename = No
 	labels = np.array(labels)
 	if output_test_scores:
 		scores = []
-		for v in range(model.nviews_):
+		for v in range(model.n_views_):
 			scores.append(np.dot(model.views_test_[v], model.model_obj_.weights_[v]))
 		scores = np.array(scores)
 	else:
