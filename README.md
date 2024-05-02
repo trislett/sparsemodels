@@ -1,6 +1,6 @@
 # sparsemodels
 
-Sparsemodels imports the core [RGCCA](https://github.com/rgcca-factory/RGCCA) implementation of the [R Penalized Multivariate Analysis (RGCCA) package](https://rdrr.io/cran/RGCCA/) using [rpy2](https://rpy2.github.io/doc/latest/html/introduction.html). It used to perform a sparse generalized canonical correlation analysis (SGCCA) with optimization for parallel processing. SGCCA using one of multiple components to maximizes the covariance among multiple datasets (called data-views) while imposing a L1 penalty. The package also includes optional functions for SGCCA-regression, permutation testing, bootstrap analyzes, variable stability selection.
+Sparsemodels imports the core [RGCCA](https://github.com/rgcca-factory/RGCCA) implementation of the [R Penalized Multivariate Analysis (RGCCA) package](https://rdrr.io/cran/RGCCA/) using [rpy2](https://rpy2.github.io/doc/latest/html/introduction.html). It is used to perform sparse generalized canonical correlation analysis (SGCCA) with optimization for parallel processing. SGCCA uses one of multiple components to maximize the covariance among multiple datasets (called data-views) while imposing an L1 penalty. The package also includes optional functions for SGCCA-regression, permutation testing, bootstrap analysis, and variable stability selection.
 
 ### Citation ###
 
