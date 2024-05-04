@@ -1,7 +1,6 @@
 import os
 import sys
 
-from distutils.command.sdist import sdist
 from setuptools import setup, find_packages
 
 PACKAGE_NAME = "sparsemodels"
@@ -41,13 +40,9 @@ def configuration(parent_package = "", top_path = None):
 
   return CONFIG
 
-cmdclass = {"sdist": sdist}
 
 if os.path.exists('MANIFEST'):
   os.remove('MANIFEST')
-
-if parse_setuppy_commands():
-  from numpy.distutils.core import setup
 
 exec(open('sparsemodels/version.py').read())
 setup(name = PACKAGE_NAME, version = __version__, include_package_data=True,
@@ -61,7 +56,6 @@ setup(name = PACKAGE_NAME, version = __version__, include_package_data=True,
   license="GNU General Public License v3 or later (GPLv3+)",
   classifiers=CLASSIFIERS,
   zip_safe=False,
-  cmdclass=cmdclass,
   install_requires=BUILD_REQUIRES,
   packages=['sparsemodels'],
   package_dir={'sparsemodels': ''},
