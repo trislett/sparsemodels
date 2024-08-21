@@ -9,3 +9,11 @@ Sparsemodels imports the core [RGCCA](https://github.com/rgcca-factory/RGCCA) im
 Tenenhaus, A., Philippe, C., Guillemot, V., Le Cao, K.-A., Grill, J., & Frouin, V. (2014). Variable selection for generalized canonical correlation analysis. Biostatistics , 15(3), 569–583.
 
 Tenenhaus, M., Tenenhaus, A., & Groenen, P. J. F. (2017). Regularized Generalized Canonical Correlation Analysis: A Framework for Sequential Multiblock Component Methods. Psychometrika. https://doi.org/10.1007/s11336-017-9573-x
+
+### Conda installation ###
+
+	git clone https://github.com/trislett/sparsemodels
+	cd sparsemodels
+	conda env create -f environment.yml
+	conda activate sparsemodel_env
+	pip install git+https://github.com/trislett/sparsemodels
