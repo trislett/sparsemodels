@@ -15,5 +15,5 @@ Tenenhaus, M., Tenenhaus, A., & Groenen, P. J. F. (2017). Regularized Generalize
 	git clone https://github.com/trislett/sparsemodels
 	cd sparsemodels
 	conda env create -f environment.yml
-	conda activate sparsemodel_env
+	conda activate sparsemodels_env
 	pip install git+https://github.com/trislett/sparsemodels

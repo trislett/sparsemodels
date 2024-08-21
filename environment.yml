@@ -1,4 +1,4 @@
-name: sparsemodel_env
+name: sparsemodels_env
 channels:
   - conda-forge
   - defaults
