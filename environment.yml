@@ -10,8 +10,7 @@ dependencies:
   - r-base
   - r-essentials
   - r-rgcca
-  - pip:
-    - cython
-    - rpy2
-    - tqdm
+  - cython
+  - rpy2
+  - tqdm
 
