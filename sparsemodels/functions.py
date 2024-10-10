@@ -224,13 +224,60 @@ def calculate_variable_importance_projection(model_scores, model_loadings, model
 		vips[i] = np.sqrt(n_variables*(s.T @ weight)/total_s)
 	return(vips)
 
+
+def calculate_cov_optimal_shrinkage_ss(X):
+	"""
+	Schaefer-Strimmer covariance estimator.
+	
+	Parameters
+	----------
+	X : np.ndarray
+		Array with shape (n_samples, n_variables).
+	
+	Returns
+	-------
+	cov : np.ndarray
+		Covariance matrix with shape (n_variables, n_variables), estimated using Schaefer-Strimmer shrinkage.
+	
+	shrinkage : float
+		The optimal shrinkage coefficient that minimizes the mean squared error.
+	
+	References
+	----------
+	Schaefer J, Strimmer K. A shrinkage approach to large-scale covariance matrix estimation and implications for functional genomics.
+	Stat Appl Genet Mol Biol. 2005;4:Article32. doi: 10.2202/1544-6115.1175.
+	"""
+	
+	# Benchmark: 5.26 ms with np.ndarray(559,335)
+	n_samples = X.shape[0]
+	sample_cov = np.cov(X.T, ddof=0)
+	X_c = X.T - X.mean(axis=0)[:, np.newaxis]
+	
+	# Empirical correlation matrix, scaled by sample size
+	R = np.corrcoef(X.T) * np.divide(n_samples, (n_samples - 1.0))
+	
+	# Variance of the empirical correlation
+	R_VAR = (X_c**2).dot((X_c**2).T) - 2 * sample_cov * X_c.dot(X_c.T)
+	R_VAR += n_samples * sample_cov ** 2
+	R_VAR *= np.divide(n_samples, ((n_samples - 1) ** 3 * np.outer(X.var(0), X.var(0))))
+	R -= np.diag(np.diag(R))
+	R_VAR -= np.diag(np.diag(R_VAR))
+	
+	# Optimal shrinkage intensity
+	gamma = max(0, min(1, np.divide(R_VAR.sum(), (R**2).sum())))
+	
+	# Shrinkage covariance matrix
+	cov = (1 - gamma) * np.divide(n_samples, (n_samples - 1)) * sample_cov
+	cov += gamma * np.divide(n_samples, (n_samples - 1)) * np.diag(np.diag(sample_cov))
+	return(cov, gamma)
+
 # Sparse Generalized Canonical Correlation Analysis for Multiblock Data
 class sgcca_rwrapper:
 	"""
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, tol = 1e-10):
+	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 1.0, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, tol = 1e-10):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -242,6 +289,9 @@ class sgcca_rwrapper:
 		l1_sparsity : np.ndarray or float or None
 			A float or an array of floats that specifies the sparsity penalty on the outer weights.
 			Default value is None, in which case the penalty is set to 1 for all views.
+		tau : np.array or float or str
+			The shrinkage parameter applied to each block. The default is 1. A float will apply the same value among all views. Setting tau='optimal' will using the
+			Schafer and Strimmer (2005; doi: 10.2202/1544-6115.1175) algorithm to find the best shrinkage parameter. 
 		n_comp : int or np.ndarray
 			An integer or an array of integers that specifies the number of components for each view.
 			Default value is 1 for all views. It is possible set a different number of components for each dataview
@@ -273,6 +323,7 @@ class sgcca_rwrapper:
 		assert scheme in np.array(["horst", "factorial", "centroid"]), "Error: %s is not a valid scheme option. Must be: horst, factorial, or centroid" % scheme
 		self.design_matrix = design_matrix
 		self.l1_sparsity = l1_sparsity
+		self.tau_ = tau
 		self.n_comp = n_comp
 		self.scheme = scheme
 		self.scale = scale
@@ -280,6 +331,7 @@ class sgcca_rwrapper:
 		self.bias = bias
 		self.penalty = "l1"
 		self.tol = tol
+		self.tau_optimal = False
 
 	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0, scale_single_view = False):
 		"""
@@ -412,10 +464,18 @@ class sgcca_rwrapper:
 		if self.scale:
 			self.views_ = self.scaleviews(self.views_)
 		self.check_sparsity(verbose = verbose)
-		
+
+		if self.tau_ == 'optimal':
+			tau = np.zeros((len(self.views_)))
+			for v, view in enumerate(self.views_):
+				tau[v] = calculate_cov_optimal_shrinkage_ss(view)[1]
+			self.tau_optimal = True
+			self.tau_ = np.array(tau)
+
 		numpy2ri.activate()
 		fit = rgcca.rgcca(blocks = self.views_, 
 							connection = self.design_matrix,
+							tau = self.tau_,
 							sparsity = self.l1_sparsity,
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
@@ -563,8 +623,7 @@ class sgcca_rwrapper:
 		Returns:
 		--------
 		yhat : np.ndarray
-			3d array with shape (n_views, n_subjects, n_components)
-			a prediction of the score based on a linear regression model with one view as the response variable
+			predicted response view with shape (n_subjects, n_components)
 		"""
 		if scores.ndim == 2:
 			scores = scores[:,:,np.newaxis]
@@ -681,7 +740,7 @@ class parallel_sgcca():
 			self.matidx_ = matidx
 
 	def _datestamp(self):
-		print("2023_04_05")
+		print("2024_10_10")
 
 	def nfoldsplit_group(self, group, n_fold = 10, holdout = 0, train_index = None, verbose = False, debug_verbose = False, seed = None):
 		"""
@@ -822,7 +881,7 @@ class parallel_sgcca():
 			subsetdata.append(views[v][indices])
 		return(subsetdata)
 
-	def bootstrap_views(self, views, sample_proportion = 1., with_replacement = True, seed = None):
+	def bootstrap_views(self, views, sample_proportion = 1., with_replacement = True, seed = None, block_groups = None):
 		"""
 		Bootstraps with replacement the rows of each view in the input list of views (or scores).
 
@@ -832,20 +891,30 @@ class parallel_sgcca():
 			A list of np.ndarray views data to permute.
 		seed : int, optional
 			Seed for the random number generator. Default is None.
-
+		block_groups : None or np.array
+			Set the blocking for bootstrapping (e.g., block_groups = model.group_[model.train_index_])
 		Returns:
 		--------
 		permutedviews : list
 			A list of np.ndarray views data with permuted rows.
 			Each element in the list corresponds to a view from the input list.
 		"""
+
 		if seed is None:
 			np.random.seed(np.random.randint(4294967295))
 		else:
 			np.random.seed(seed)
 		
 		n = len(views[0])
-		indices = np.random.choice(n, size=int(n*sample_proportion), replace=with_replacement)
+		if block_groups is not None: 
+			indices = []
+			for group in np.unique(block_groups):
+				ind_temp = np.argwhere(block_groups == group)[:,0]
+				ng = len(ind_temp)
+				indices.append(ind_temp[np.random.choice(ng, size=ng, replace=True)])
+			indices = np.concatenate(indices)
+		else:
+			indices = np.random.choice(n, size=int(n*sample_proportion), replace=with_replacement)
 		bsviews = []
 		for v in range(len(views)):
 			bsviews.append(views[v][indices])
@@ -877,7 +946,7 @@ class parallel_sgcca():
 			permutedviews.append(np.random.permutation(views[v]))
 		return(permutedviews)
 
-	def _prediction_mccv(self, p, views, train_index, l1, split, n_comp = 1, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3, seed = None):
+	def _prediction_mccv(self, p, views, train_index, l1, tau, split, n_comp = 1, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3, seed = None):
 		"""
 		Perform a single iteration of Monte Carlo cross-validation (MCCV).
 
@@ -936,13 +1005,14 @@ class parallel_sgcca():
 		mtest = self.subsetviews(views, cvtestidx)
 		mfit = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = l1,
+									tau = tau,
 									n_comp = n_comp,
 									scheme = self.scheme,
 									tol = tol).fit(mtrain)
 		mscoretest = mfit.transform(mtest)
 		return(r2_score(mscoretest[0], mfit.predict(mscoretest, 0, verbose = False)))
 
-	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1),n_component_range = np.arange(1,11,1), n_perm_per_block = 200, split_test_ratio = 0.2, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3):
+	def prediction_mccv(self, views, l1_range = np.arange(0.1,1.1,.1), tau = 'optimal', n_component_range = np.arange(1,11,1), n_perm_per_block = 200, split_test_ratio = 0.2, metric_function = regression_metric_function(metric = 'r2_score'), tol = 1e-3):
 		"""
 		Montecarlo cross-validation
 
@@ -976,6 +1046,10 @@ class parallel_sgcca():
 		# For the future, use groups.
 		
 		views_train = self.subsetviews(views, self.train_index_)
+		if tau == 'optimal':
+			tau = np.zeros(len(views_train))
+			for v in range(len(views_train)):
+				tau[v] = calculate_cov_optimal_shrinkage_ss(views_train[v])[1]
 		n_subs = views_train[0].shape[0]
 		split = int(n_subs*split_test_ratio)
 		stat_mean = np.zeros((len(l1_range), len(n_component_range)))
@@ -985,9 +1059,9 @@ class parallel_sgcca():
 				seeds = generate_seeds(n_perm_per_block)
 				stat = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
 							delayed(self._prediction_mccv)(p, views = views,
-																design_matrix = self.design_matrix,
 																train_index = self.train_index_,
 																l1 = l1,
+																tau = tau,
 																split = split,
 																n_comp = n_comp,
 																metric_function = metric_function,
@@ -997,7 +1071,7 @@ class parallel_sgcca():
 				stat_std[c, i] = np.std(stat)
 		return(stat_mean, stat_std)
 
-	def _premute_model(self, p, views_train, l1, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-3, outer = True, seed = None):
+	def _premute_model(self, p, views_train, l1, tau, views_test = None, aggregate_values = True, n_comp = 1, metric = 'objective_function', tol = 1e-3, outer = True, seed = None):
 		"""
 		Permutation testing for model significance and hyperparameter selection.
 		"""
@@ -1010,6 +1084,7 @@ class parallel_sgcca():
 				pviews = self.permute_views(views_train)
 				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1,
+											tau = tau,
 											n_comp = n_comp,
 											scheme = self.scheme,
 											scale = self.scale_views,
@@ -1022,6 +1097,7 @@ class parallel_sgcca():
 				pviews = self.permute_views(views_train)
 				pmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1,
+											tau = tau,
 											n_comp = n_comp,
 											scheme = self.scheme,
 											scale = self.scale_views,
@@ -1099,6 +1175,7 @@ class parallel_sgcca():
 		n_comp = np.max(self.n_components_)
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = self.l1_sparsity_,
+									tau = self.tau_,
 									n_comp = self.n_components_,
 									scheme = self.scheme,
 									scale = self.scale_views,
@@ -1132,6 +1209,7 @@ class parallel_sgcca():
 					delayed(self._premute_model)(p = p,
 														views_train = self.views_train_,
 														l1 = self.l1_sparsity_,
+														tau = self.tau_,
 														views_test = self.views_test_,
 														n_comp = self.n_components_,
 														aggregate_values = False,
@@ -1164,29 +1242,52 @@ class parallel_sgcca():
 			self.perm_statstar_train_ = statstar_train
 			self.perm_statstar_test_ = statstar_test
 
-	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), n_perm_per_block = 200, metric = 'objective_function', tol = 1e-3, verbose = True):
+	def run_parallel_parameterselection(self, views, l1_range = np.arange(0.1,1.1,.1), tau = 'optimal', n_perm_per_block = 200, metric = 'objective_function', tol = 1e-5, verbose = True):
 		"""
+		A fast (parallelized) parameter selection for the optimal l1 sparsity. The metric (t) is calculated for each l1 sparsity level, and then compared to a specified 
+		number of model with permutted data views. The best l1 sparsity parameter is selected by the maximum z-score (t / std(tstar)).
+		
 		Parameters
 		----------
-		metric: str
+		views : list of np.ndarray
+			A list of 2D arrays, where each array represents a view. The data views will be automatically subsampled by the training index.
+			The shape of each view is (n_variables, n_subjects).
+		l1_range : np.ndarray, default=np.arange(0.1,1.1,.1)
+			L1 sparsity range to test.
+		tau : float or np.ndarray, default='optimal'
+			The shrinkage parameter of the model. If tau=1, the covariance criterion is maximized which is good for stable components. If tau=0, the correlation criterion
+			is maximized (i.e., canonical correlates), the solition is unstable with multicollinearity and cannot be used when a view is rank deficient (n<p).
+			tau='optimal' automatically estimates the best shrinkage by minimizing the mean squared error (Schafer, Strimmer 2005).
+		n_perm_per_block : int
+			The number of permutations to perform per block.
+		metric
 			Metric options are: objective_function, fisherz_transformation, or mean_correlation. (Default: 'objective_function')
-		view_index: None or int
-			Sets the view to optimize. Must be set of for prediction. If None, all pairwise correlations are used.
+		tol : float
+			default = 1e-5
+			A float that specifies the tolerance at which the model has converged. 
+		verbose: bool
+			Print the statistics, and p-values
 		Returns
 		---------
 			self
 		"""
 		assert hasattr(self,'train_index_'), "Error: run create_nfold"
 		self._check_design_matrix(len(views))
-		
 		views_train = self.subsetviews(views, self.train_index_)
 		zstat = np.zeros_like(l1_range)
 		tmetric = np.zeros_like(l1_range)
 		tstar_blocks = np.zeros((len(l1_range), n_perm_per_block))
 		parameterselection_l1_penalties = []
+		parameterselection_tau_penalties = []
+		
+		if tau == 'optimal':
+			tau = np.zeros(len(views_train))
+			for v in range(len(views_train)):
+				tau[v] = calculate_cov_optimal_shrinkage_ss(views_train[v])[1]
 		for i, l1 in enumerate(l1_range):
 			mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 										l1_sparsity = l1,
+										tau = tau,
 										n_comp = 1,
 										scheme = self.scheme,
 										scale = self.scale_views,
@@ -1206,6 +1307,7 @@ class parallel_sgcca():
 						delayed(self._premute_model)(p = p,
 															views_train = views_train,
 															l1 = l1,
+															tau = tau,
 															n_comp = 1,
 															metric = metric,
 															aggregate_values = True,
@@ -1217,14 +1319,15 @@ class parallel_sgcca():
 			tstar_blocks[i] = tstar
 			if verbose:
 				print("Sparsity [%1.2f]: t = %1.5f, mean(t*) = %1.5f, std(t*) = %1.5f, z-stat = %1.5f" % (l1, t, np.mean(tstar), np.std(tstar), z))
-			self.parameterselection_zstat_ = zstat
-			self.parameterselection_tmetric_ = tmetric
-			self.parameterselection_tstar_ = tstar_blocks
-			self.parameterselection_besttuningindex_ = np.argmax(zstat)
-			self.parameterselection_bestpenalties_ = l1_range[self.parameterselection_besttuningindex_]
-			self.parameterselection_l1penalties_ = np.array(parameterselection_l1_penalties)
+		self.parameterselection_tau_ = tau
+		self.parameterselection_zstat_ = zstat
+		self.parameterselection_tmetric_ = tmetric
+		self.parameterselection_tstar_ = tstar_blocks
+		self.parameterselection_besttuningindex_ = np.argmax(zstat)
+		self.parameterselection_bestpenalties_ = l1_range[self.parameterselection_besttuningindex_]
+		self.parameterselection_l1penalties_ = np.array(parameterselection_l1_penalties)
 
-	def fit_model(self, views, n_components, l1_sparsity = None):
+	def fit_model(self, views, n_components, l1_sparsity = None, tau = None):
 		"""
 		Fits SGCCA model to the provided views.
 
@@ -1237,6 +1340,11 @@ class parallel_sgcca():
 			Number of components to fit.
 		l1_sparsity : float or np.ndarray, default=None
 			L1 sparsity parameter for the model. If None, the best
+			penalty parameter found during parameter selection (if
+			performed) will be used. If neither parameter selection nor
+			l1_sparsity is specified, l1_sparsity is set to 1.0.
+		tau : float or np.ndarray, default=1.0
+			The shrinkage parameter of the model. If None, the best
 			penalty parameter found during parameter selection (if
 			performed) will be used. If neither parameter selection nor
 			l1_sparsity is specified, l1_sparsity is set to 1.0.
@@ -1290,20 +1398,27 @@ class parallel_sgcca():
 		self.n_views_ = len(views)
 		self._check_design_matrix(self.n_views_)
 
-		if l1_sparsity is None:
-			if hasattr(self,'parameterselection_bestpenalties_'):
-				l1_sparsity = self.parameterselection_bestpenalties_
-				print("Parameter selection detected. Setting l1 sparsity to: %1.2f for all views" % l1_sparsity)
-			else:
-				l1_sparsity = 1.
-				print("Setting l1 sparsity to 1.0 for all views")
-
 		# note: scaling is done internally by sgcca_wrapper
 		self.views_train_ = self.subsetviews(views, self.train_index_)
 		self.views_test_ = self.subsetviews(views, self.test_index_)
 
+		if l1_sparsity is None:
+			if hasattr(self,'parameterselection_bestpenalties_'):
+				l1_sparsity = self.parameterselection_bestpenalties_
+				print("Parameter selection detected. Setting l1 sparsity to:", l1_sparsity)
+			else:
+				l1_sparsity = 1.
+				print("Setting l1 sparsity to 1.0 for all views")
+		if tau is None:
+			if hasattr(self,'parameterselection_tau_'):
+				tau = self.parameterselection_tau_
+				print("Parameter selection detected. Setting tau shrinkage to:", tau)
+			else:
+				tau = 1.
+				print("Setting tau sparsity to 1.0 for all views")
 		mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 									l1_sparsity = l1_sparsity,
+									tau = tau,
 									n_comp = n_components,
 									init = self.initialization,
 									scale = self.scale_views,
@@ -1331,6 +1446,7 @@ class parallel_sgcca():
 		self.test_canonical_correlations_ = test_canonical_correlation
 		self.n_components_ = n_components
 		self.l1_sparsity_ = l1_sparsity
+		self.tau_ = mdl.model_obj_.tau_
 		self.model_obj_ = mdl
 		return(self)
 
@@ -1391,8 +1507,7 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
-	# Candidate functions
-	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, subsampling = False, seed = None):
+	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, subsampling = False, block_groups = None, seed = None):
 		"""
 		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
 
@@ -1412,8 +1527,8 @@ class parallel_sgcca():
 			The initialization method for the optimization algorithm.
 		convergence_warning: bool, default=True
 			If True, print a convergence error message when the optimization algorithm does not converge.
-		return_VIP: bool, default=False
-			If True, return the variable importance in projection (VIP) scores instead of the weights.
+		block_groups : None or np.array
+			Set the blocking for bootstrapping (e.g., block_groups = model.group_[model.train_index_])
 		seed: int or None, default=None
 			The seed for the random number generator.
 
@@ -1434,10 +1549,13 @@ class parallel_sgcca():
 			try:
 				if subsampling:
 					bviews = self.bootstrap_views(views, sample_proportion = 0.5, with_replacement = False)
+				elif block_groups is not None:
+					bviews = self.bootstrap_views(views, block_groups=block_groups)
 				else:
 					bviews = self.bootstrap_views(views)
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1_sparsity,
+											tau = self.tau_,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
 											scale = self.scale_views,
@@ -1449,10 +1567,13 @@ class parallel_sgcca():
 					print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
 				if subsampling:
 					bviews = self.bootstrap_views(views, sample_proportion = 0.5, with_replacement = False, seed = np.random.randint(4294967295))
+				elif block_groups is not None:
+					bviews = self.bootstrap_views(views, block_groups = block_groups, seed = np.random.randint(4294967295))
 				else:
 					bviews = self.bootstrap_views(views, seed = np.random.randint(4294967295))
 				bmdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 											l1_sparsity = l1_sparsity,
+											tau = self.tau_,
 											n_comp = self.n_components_,
 											scheme = self.scheme,
 											scale = self.scale_views,
@@ -1714,6 +1835,7 @@ def plot_ncomponents(model, views, max_n_comp, l1_sparsity, labels = None, png_b
 		l1_sparsity = np.tile(l1_sparsity, np.max(max_n_comp)).reshape(np.max(max_n_comp), n_views_)
 	temp_model = sgcca_rwrapper(design_matrix = model.design_matrix,
 										l1_sparsity = l1_sparsity,
+										tau = model.tau_,
 										n_comp = max_n_comp,
 										init = model.initialization,
 										scale = model.scale_views,
