@@ -881,6 +881,49 @@ class parallel_sgcca():
 			subsetdata.append(views[v][indices])
 		return(subsetdata)
 
+	def pvalue_bootstrap(self, stat, bootstrap_dist):
+		"""
+		Calculate a p-value of bootstrapped distribution based calculated statistics
+		
+		Parameters:
+		-----------
+		stat : float
+			A statistic
+		bootstrap_dist : np.ndarray
+			1d array of bootstrapped values
+
+		Returns:
+		--------
+		pvalue : float
+			The p-value
+		"""
+		bootstrap_dist *= np.sign(stat) # flip signs to positive direction
+		stat *= np.sign(stat)
+		null_dist = bootstrap_dist - bootstrap_dist.mean()  # note: assume null=0; therefore, not generalizable
+		pvalue = (np.mean(null_dist > stat) + (0.5*np.mean(null_dist == stat)))*2 # p-value calculated from the measured valued
+		return(pvalue)
+
+	def pvalue_bootstrap_general(self, bootstrap_dist, null_value = 0):
+		"""
+		Calculate a p-value of bootstrapped distribution based calculated statistics
+		
+		Parameters:
+		-----------
+		stat : float
+			A statistic
+		bootstrap_dist : np.ndarray
+			1d array of bootstrapped values
+		null_value : float
+			The null value to test. Default = 0
+		Returns:
+		--------
+		pvalue : float
+			The p-value
+		"""
+		halfp = np.mean(bootstrap_dist > null_value) + (0.5*np.mean(bootstrap_dist == null_value))
+		pvalue = 2 * min(halfp,(1-halfp))
+		return(pvalue)
+
 	def bootstrap_views(self, views, sample_proportion = 1., with_replacement = True, seed = None, block_groups = None):
 		"""
 		Bootstraps with replacement the rows of each view in the input list of views (or scores).
@@ -1446,7 +1489,7 @@ class parallel_sgcca():
 		self.test_canonical_correlations_ = test_canonical_correlation
 		self.n_components_ = n_components
 		self.l1_sparsity_ = l1_sparsity
-		self.tau_ = mdl.model_obj_.tau_
+		self.tau_ = mdl.tau_
 		self.model_obj_ = mdl
 		return(self)
 
@@ -1507,7 +1550,7 @@ class parallel_sgcca():
 			self.prediction_test_bootstraps_CI_025_ = np.percentile(corr_bootstraps, 2.5, axis = 0)
 			self.prediction_test_bootstraps_CI_975_ = np.percentile(corr_bootstraps, 97.5, axis = 0)
 
-	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, subsampling = False, block_groups = None, seed = None):
+	def _bootstrap_model_coefficients(self, b, views = None, l1_sparsity = None, tau = None, tol = 1e-3, orthogonal_weights = False, init = "svd", convergence_warning = True, subsampling = False, block_groups = None, seed = None):
 		"""
 		Compute the weights of a sparse generalized canonical correlation analysis model using bootstrapping.
 
@@ -1519,6 +1562,8 @@ class parallel_sgcca():
 			The list of views used to compute the weights. If None, the train views are used.
 		l1_sparsity: float or None, default=None
 			The L1 sparsity of the model. If None, the L1 sparsity used in the original model is used.
+		tau: float or None, default=None
+			The tau of the model. If None, the L1 sparsity used in the original model is used.
 		tol: float, default=1e-3
 			The tolerance for the convergence of the optimization algorithm.
 		orthogonal_weights: bool, default=False
@@ -1541,6 +1586,8 @@ class parallel_sgcca():
 			views = self.views_train_
 		if l1_sparsity is None:
 			l1_sparsity = self.l1_sparsity_
+		if tau is None:
+			tau = self.tau_
 		if seed is None:
 			seed = np.random.randint(4294967295)
 		np.random.seed(seed)
@@ -1609,9 +1656,68 @@ class parallel_sgcca():
 		self.original_views_= self.views_
 		self.fit_model(views = selected_views_, n_components = self.n_components_, l1_sparsity = 1)
 
+	def bootstrap_model_coefficients(self, n_bootstraps = 1000, block_groups = None, tol = 1e-5, orthogonal_weights = False):
+		"""
+		Determines the significance of model coefficients using bootstraping
+		
+		Parameters:
+		-----------
+		n_bootstraps : int, optional (default=1000)
+			Number of bootstraps to perform.
+		block_groups : None or np.array
+			Set the blocking for bootstrapping (e.g., block_groups = model.group_[model.train_index_])
+		tol : float, optional (default=1e-5)
+			Tolerance for convergence during bootstrap iterations.
+		orthogonal_weights : bool, optional (default=True)
+			If True, use orthogonal weights during bootstrap iterations.
+		Returns:
+		--------
+		None
+			Modifies class attributes:
+				self.train_weights_bootstrap_
+				self.train_weights_bootstrap_pval_
+				self.train_weights_bootstrap_CI_025_
+				self.train_weights_bootstrap_CI_975_
+		"""
+		assert hasattr(self,'model_obj_'), "Error: run fit_model"
+
+		if orthogonal_weights:
+			weights = self.model_obj_.weights_
+		else:
+			weights = self.model_obj_.weights_outer_
+
+		seeds = generate_seeds(n_bootstraps)
+		output_wt = Parallel(n_jobs = self.n_jobs, backend='multiprocessing')(
+					delayed(self._bootstrap_model_coefficients)(b = b,
+														views = None,
+														tol = tol,
+														convergence_warning = False,
+														block_groups = block_groups,
+														orthogonal_weights = orthogonal_weights,
+														seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
+
+		bootstrapped_weights_pvalues = []
+		CI_025_ = []
+		CI_975_ = []
+		for v in range(self.n_views_):
+			bs_wts = np.zeros((n_bootstraps, weights[v].shape[0], weights[v].shape[1]))
+			for b in range(n_bootstraps):
+				bs_wts[b] = output_wt[b][v]
+			pval_bs = np.zeros(weights[v].shape)
+			for c in range(self.n_components_):
+				for r in range(weights[v].shape[0]):
+					pval_bs[r,c] = self.pvalue_bootstrap(stat = weights[v][r,c], bootstrap_dist = bs_wts[:,r,c])
+			bootstrapped_weights_pvalues.append(pval_bs)
+			CI_025_.append(np.percentile(bs_wts, 97.5, 0))
+			CI_975_.append(np.percentile(bs_wts, 2.5, 0))
+		self.train_weights_bootstrap_ = output_wt
+		self.train_weights_bootstrap_pval_ = bootstrapped_weights_pvalues
+		self.train_weights_bootstrap_CI_025_ = CI_025_
+		self.train_weights_bootstrap_CI_975_ = CI_975_
+
 	def run_parallel_stability_selection(self, n_bootstraps = 1000, consistency_threshold = 0.9, tol = 1e-5, orthogonal_weights = True, fit_feature_selected_model = True, global_selection = False, use_percentile = False):
 		"""
-		Performs Stability Selection for feature selection using subsampling and thresholding.
+		Performs stability selection of features using subsampling and thresholding.
 		
 		References:
 		----------
