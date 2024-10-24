@@ -277,7 +277,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 1.0, n_comp = 1, scheme = "centroid", scale = True, init = "svd", bias = True, tol = 1e-10):
+	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 1.0, n_comp = 1, scheme = "centroid", scale = True, superblock = False, method = "sgcca", init = "svd", bias = True, tol = 1e-10):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -307,6 +307,12 @@ class sgcca_rwrapper:
 		scale : bool
 			A boolean that specifies whether to scale the views before running SGCCA.
 			Default value is True.
+		superblock : bool
+			Superblock option (maintains compadibility with RGCCA). Superblock option currently doesn't work with parallel_sgcca.
+			default value is False
+		method : str
+			RGCCA method option (maintains compadibility with RGCCA). Different methods may or may not work with parallel_sgcca. 
+			default value is 'sgcca'
 		init : str
 			A string that specifies the initialization method used to initialize the optimization problem.
 			Default value is "svd".
@@ -327,6 +333,8 @@ class sgcca_rwrapper:
 		self.n_comp = n_comp
 		self.scheme = scheme
 		self.scale = scale
+		self.superblock = superblock
+		self.method = method
 		self.init = init
 		self.bias = bias
 		self.penalty = "l1"
@@ -480,8 +488,9 @@ class sgcca_rwrapper:
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
+							superblock = False,
 							scale_block = False,
-							method = str('sgcca'),
+							method = str(self.method),
 							init = self.init,
 							bias = self.bias,
 							tol = self.tol,
@@ -905,7 +914,7 @@ class parallel_sgcca():
 
 	def pvalue_bootstrap_general(self, bootstrap_dist, null_value = 0):
 		"""
-		Calculate a p-value of bootstrapped distribution based calculated statistics
+		Generalized calculation of a p-values from bootstrapped distribution.
 		
 		Parameters:
 		-----------
