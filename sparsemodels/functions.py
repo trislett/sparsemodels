@@ -488,7 +488,7 @@ class sgcca_rwrapper:
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
 							scale = False,
-							superblock = False,
+							superblock = self.superblock,
 							scale_block = False,
 							method = str(self.method),
 							init = self.init,
