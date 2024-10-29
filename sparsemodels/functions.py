@@ -339,7 +339,6 @@ class sgcca_rwrapper:
 		self.bias = bias
 		self.penalty = "l1"
 		self.tol = tol
-		self.tau_optimal = False
 
 	def scaleviews(self, views, centre = True, scale = True, div_sqrt_numvar = True, axis = 0, scale_single_view = False):
 		"""
@@ -477,7 +476,6 @@ class sgcca_rwrapper:
 			tau = np.zeros((len(self.views_)))
 			for v, view in enumerate(self.views_):
 				tau[v] = calculate_cov_optimal_shrinkage_ss(view)[1]
-			self.tau_optimal = True
 			self.tau_ = np.array(tau)
 
 		numpy2ri.activate()
@@ -1370,12 +1368,17 @@ class parallel_sgcca():
 			zstat[i] = z
 			tstar_blocks[i] = tstar
 			if verbose:
-				print("Sparsity [%1.2f]: t = %1.5f, mean(t*) = %1.5f, std(t*) = %1.5f, z-stat = %1.5f" % (l1, t, np.mean(tstar), np.std(tstar), z))
+				print("Sparsity: ", l1)
+				print("t = %1.5f, mean(t*) = %1.5f, std(t*) = %1.5f, z-stat = %1.5f" % (t, np.mean(tstar), np.std(tstar), z))
+		self.tau_ = tau # necessary for plotting functions. Check for better way!
 		self.parameterselection_tau_ = tau
 		self.parameterselection_zstat_ = zstat
 		self.parameterselection_tmetric_ = tmetric
 		self.parameterselection_tstar_ = tstar_blocks
-		self.parameterselection_besttuningindex_ = np.argmax(zstat)
+		if zstat.ndim == 1:
+			self.parameterselection_besttuningindex_ = np.argmax(zstat)
+		else:
+			self.parameterselection_besttuningindex_ = np.argmax(zstat[:,0])
 		self.parameterselection_bestpenalties_ = l1_range[self.parameterselection_besttuningindex_]
 		self.parameterselection_l1penalties_ = np.array(parameterselection_l1_penalties)
 
