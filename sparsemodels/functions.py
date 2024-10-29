@@ -277,7 +277,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 1.0, n_comp = 1, scheme = "centroid", scale = True, superblock = False, method = "sgcca", init = "svd", bias = True, tol = 1e-10):
+	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 'optimal', n_comp = 1, scheme = "centroid", scale = True, superblock = False, method = "sgcca", init = "svd", bias = True, tol = 1e-10):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -329,7 +329,7 @@ class sgcca_rwrapper:
 		assert scheme in np.array(["horst", "factorial", "centroid"]), "Error: %s is not a valid scheme option. Must be: horst, factorial, or centroid" % scheme
 		self.design_matrix = design_matrix
 		self.l1_sparsity = l1_sparsity
-		self.tau_ = tau
+		self.tau = tau
 		self.n_comp = n_comp
 		self.scheme = scheme
 		self.scale = scale
@@ -472,16 +472,17 @@ class sgcca_rwrapper:
 			self.views_ = self.scaleviews(self.views_)
 		self.check_sparsity(verbose = verbose)
 
-		if self.tau_ == 'optimal':
-			tau = np.zeros((len(self.views_)))
-			for v, view in enumerate(self.views_):
-				tau[v] = calculate_cov_optimal_shrinkage_ss(view)[1]
-			self.tau_ = np.array(tau)
+		if not isinstance(self.tau, np.ndarray):
+			if self.tau == 'optimal':
+				tau = np.zeros((len(self.views_)))
+				for v, view in enumerate(self.views_):
+					tau[v] = calculate_cov_optimal_shrinkage_ss(view)[1]
+				self.tau = np.array(tau)
 
 		numpy2ri.activate()
 		fit = rgcca.rgcca(blocks = self.views_, 
 							connection = self.design_matrix,
-							tau = self.tau_,
+							tau = self.tau,
 							sparsity = self.l1_sparsity,
 							ncomp = self.n_comp, 
 							scheme = self.scheme,
@@ -1337,7 +1338,7 @@ class parallel_sgcca():
 		for i, l1 in enumerate(l1_range):
 			mdl = sgcca_rwrapper(design_matrix = self.design_matrix,
 										l1_sparsity = l1,
-										tau = tau,
+										tau = np.array(tau),
 										n_comp = 1,
 										scheme = self.scheme,
 										scale = self.scale_views,
@@ -1501,7 +1502,7 @@ class parallel_sgcca():
 		self.test_canonical_correlations_ = test_canonical_correlation
 		self.n_components_ = n_components
 		self.l1_sparsity_ = l1_sparsity
-		self.tau_ = mdl.tau_
+		self.tau_ = mdl.tau
 		self.model_obj_ = mdl
 		return(self)
 
