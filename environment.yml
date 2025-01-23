@@ -1,17 +1,17 @@
-name: sparsemodels_env
+name: environment.yml
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - python==3.9
-  - numpy==1.25.2
+  - python
+  - setuptools
+  - numpy
   - libxcrypt
   - pip
   - r-base
   - r-essentials
   - r-rgcca
-  - pip:
-    - cython
-    - rpy2
-    - tqdm
-
+  - cython
+  - rpy2
+  - tqdm
+  - matplotlib
