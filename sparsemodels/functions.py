@@ -277,7 +277,7 @@ class sgcca_rwrapper:
 	Wrapper class for the SGCCA function of the R package RGCCA.
 	https://rdrr.io/cran/RGCCA/man/sgcca.html
 	"""
-	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 'optimal', n_comp = 1, scheme = "centroid", scale = True, superblock = False, method = "sgcca", init = "svd", bias = True, tol = 1e-10):
+	def __init__(self, design_matrix = None, l1_sparsity = None, tau = 1.0, n_comp = 1, scheme = "factorial", scale = True, superblock = False, method = "sgcca", init = "svd", bias = True, tol = 1e-10):
 		"""
 		Initialize the wrapper with hyperparameters for SGCCA.
 
@@ -297,7 +297,7 @@ class sgcca_rwrapper:
 			Default value is 1 for all views. It is possible set a different number of components for each dataview
 		scheme : str
 			A string that specifies the algorithm used to solve the optimization problem.
-			Scheme options are "horst", "factorial" or "centroid" (Default: "centroid")
+			Scheme options are "horst", "factorial" or "centroid" (Default: "factorial")
 			Horst scheme g(x) = x
 				Penalizes structural negative correlation between components
 			Centroid scheme g(x) = |x|
@@ -502,6 +502,7 @@ class sgcca_rwrapper:
 		self.AVE_views_ = np.array(fit.rx2('AVE')[0]) # this is the mean of the structural coefficents
 		self.AVE_outer_ = np.array(fit.rx2('AVE')[2])
 		self.AVE_inner_ = np.array(fit.rx2('AVE')[3])
+		self.variable_importance_projection_scores_ = self._calculate_variable_importance_projection_scores()
 		if np.max(self.n_comp) == 1:
 			self.crit = np.array(fit.rx2('crit'))[-1]
 		else:
@@ -725,6 +726,326 @@ class sgcca_rwrapper:
 			else:
 				crit[c] = b * np.sum(np.cov(scores[:,:,c])[self.design_matrix == 1])
 		return(crit)
+
+	def _calculate_variable_importance_projection_scores(self):
+		"""
+		Calculate Variable Importance in Projection (VIP) scores for each view in the model.
+
+		Parameters:
+		-----------
+		self : sgcca_rwrapper object
+		
+		Returns:
+		--------
+		vip_scores: list
+			VIP scores for each view.
+		
+		References:
+		--------
+			Mahieu B, Qannari EM, Jaillais B. Extension and significance testing of Variable Importance in Projection (VIP) indices in Partial Least Squares 
+			regression and Principal Components Analysis. Chemometrics and Intelligent Laboratory Systems. 2023 Nov 15;242:104986.
+			https://github.com/rgcca-factory/RGCCA/blob/main/R/rgcca_stability.R
+		"""
+		vip_scores = []
+		for v in range(self.n_views_):
+			n_view_vars, n_view_components = self.weights_[v].shape
+			total_ave = np.sum(self.AVE_views_[v, :])
+			weighted_squared_weights = np.zeros((n_view_vars,))
+			for c in range(n_view_components):
+				weighted_squared_weights += self.weights_[v][:, c]**2 * self.AVE_views_[v, c]
+			vip = np.sqrt((n_view_components / total_ave) * weighted_squared_weights)
+			vip_scores.append(vip)
+		return(vip_scores)
+
+	def calculate_vip_score_regression(self, response_index = 0):
+		"""
+		Calculate the vVariable Importance in Projection (VIP) scores for a sgcca-regression analysis.
+
+		Parameters:
+		-----------
+		self : sgcca_rwrapper object
+
+		Returns:
+		--------
+			vip_regression_scores : list
+			VIP score for each data-view feature. The response view is the same as self.variable_importance_projection_scores_[response_index].
+		References:
+		--------
+			Mahieu B, Qannari EM, Jaillais B. Extension and significance testing of Variable Importance in Projection (VIP) indices in Partial Least Squares 
+			regression and Principal Components Analysis. Chemometrics and Intelligent Laboratory Systems. 2023 Nov 15;242:104986.
+		"""
+		
+		view_indices = np.arange(0, self.n_views_)
+		assert response_index in view_indices, "Error: response index in not in view_indices"
+
+		scores = self.transform(self.views_) # shape (n_views, n_subs, n_comps)
+		Y_scores = scores[response_index]
+
+		vip_regression_scores = []
+		for vidx in view_indices:
+			if response_index == vidx:
+				vip_score = self.variable_importance_projection_scores_[vidx]
+				vip_regression_scores.append(vip_score)
+			else:
+				x_weights = self.weights_outer_[vidx]
+				X_scores = scores[vidx]
+				n_components = x_weights.shape[1]
+				canonical_corrs = []
+				for i in range(n_components):
+					corr = np.corrcoef(X_scores[:, i], Y_scores[:, i], rowvar=False)[0, 1]
+					canonical_corrs.append(corr)
+				canonical_corrs = np.array(canonical_corrs)
+				squared_corrs = canonical_corrs ** 2
+				squared_weights = x_weights ** 2
+				p = x_weights.shape[0]  # Number of features in X
+				weighted_squares = squared_weights * squared_corrs.reshape(1, -1)
+				sum_weighted_squares = np.sum(weighted_squares, axis=1)
+				total_squared_corrs = np.sum(squared_corrs)
+				if total_squared_corrs == 0:
+					raise ValueError("Total squared canonical correlations is zero; no influence can be computed.")
+				vip_score = np.sqrt((p / total_squared_corrs) * sum_weighted_squares)
+				vip_regression_scores.append(vip_score)
+		return(vip_regression_scores)
+
+
+#model2 = pickle_load_model('/home/tris/scripts/testing/test_data/model.pkl' )
+#l1_sparsity = 0.3
+#views = model2.original_model_obj_.views_
+#model_new = sgcca_rwrapper(l1_sparsity=l1_sparsity, n_comp=10)
+#model_new.fit(views)
+#block_groups = model2.group_[model2.train_index_]
+#vnames = pickle_load_model('views_vnames.pkl')
+
+#views_train = model.original_model_obj_.views_
+#model_new = sgcca_rwrapper(l1_sparsity=model.parameterselection_bestpenalties_, n_comp=3)
+#model_new.fit(views_train)
+
+#n_bootstraps = 1000
+#seeds = generate_seeds(n_bootstraps)
+#output_vip = Parallel(n_jobs = 12, backend='multiprocessing')(
+#			delayed(_bootstrap_model_vip_reg)(b = b,
+#												model_new = model_new,
+#												block_groups = None,
+#												seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
+#percentage_keep = np.array([np.mean(np.array(x) != 0) for x in model_new.weights_outer_])
+
+#percentage_keep_arr = np.zeros_like(model.parameterselection_l1penalties_)
+#percentage_keep_arr = percentage_keep_arr[:,0,:]
+#for p, pen in enumerate(model.parameterselection_l1penalties_):
+#	print(pen[0])
+#	model_temp = sgcca_rwrapper(l1_sparsity=pen[0], n_comp=len(pen[0]))
+#	model_temp.fit(views_train)
+#	percentage_keep_arr[p] = np.array([np.mean(np.array(x) != 0) for x in model_temp.weights_outer_])
+
+#for p, percentage_keep in enumerate(percentage_keep_arr):
+#	print("L1 penalty ", model.parameterselection_l1penalties_[p,0,:])
+#	print("% keep", percentage_keep)
+#	stable_variables = []
+#	for v in range(model_new.n_views_):
+#		vtemp_vip = np.zeros((n_bootstraps, len(output_vip[0][v])))
+#		for b in range(n_bootstraps):
+#			vtemp_vip[b] = output_vip[b][v]
+#		stable_variables.append((np.mean(vtemp_vip,0) > np.percentile(np.mean(vtemp_vip,0), (1-percentage_keep[v])*100))*1)
+
+#	view_stable = []
+#	for v, view in enumerate(views_train):
+#		view_stable.append(view[:,stable_variables[v] == 1])
+#	try:
+#		model_stable = sgcca_rwrapper(l1_sparsity=1, n_comp=3)
+#		model_stable.fit(view_stable)
+#		print(model_stable.AVE_inner_)
+#		print("AVE INNER")
+#		print(np.mean(model_stable.AVE_inner_))
+#		print("\n")
+#	except:
+#		print("Error", percentage_keep)
+
+#n_tests = 100
+#mean_ave_inner = np.zeros((n_tests))
+#ave_inner = np.zeros((n_tests, 3))
+#for p, percentage_keep in enumerate(np.linspace(0.1,1,n_tests)):
+##	print("L1 penalty ", model.parameterselection_l1penalties_[p,0,:])
+#	percentage_keep = np.array([percentage_keep,percentage_keep,percentage_keep])
+#	print("% keep", percentage_keep)
+#	stable_variables = []
+#	for v in range(model_new.n_views_):
+#		vtemp_vip = np.zeros((n_bootstraps, len(output_vip[0][v])))
+#		for b in range(n_bootstraps):
+#			vtemp_vip[b] = output_vip[b][v]
+#		stable_variables.append((np.mean(vtemp_vip,0) > np.percentile(np.mean(vtemp_vip,0), (1-percentage_keep[v])*100))*1)
+
+#	view_stable = []
+#	for v, view in enumerate(views_train):
+#		view_stable.append(view[:,stable_variables[v] == 1])
+#	try:
+#		model_stable = sgcca_rwrapper(l1_sparsity=1, n_comp=3)
+#		model_stable.fit(view_stable)
+#		print(model_stable.AVE_inner_)
+#		print("AVE INNER")
+#		print(np.mean(model_stable.AVE_inner_))
+#		print("\n")
+#		mean_ave_inner[p] = np.mean(model_stable.AVE_inner_)
+#		ave_inner[p] = model_stable.AVE_inner_
+#	except:
+#		print("Error", percentage_keep)
+
+#plt.plot(np.linspace(0.1,1,n_tests), mean_ave_inner)
+#plt.savefig("test2.png")
+#plt.close()
+
+#percentage_keep = np.array([np.mean(np.array(x) != 0) for x in model_new.weights_outer_])
+#stable_variables = []
+#for v in range(model_new.n_views_):
+#	vtemp_vip = np.zeros((n_bootstraps, len(output_vip[0][v])))
+#	for b in range(n_bootstraps):
+#		vtemp_vip[b] = output_vip[b][v]
+#	stable_variables.append((np.mean(vtemp_vip,0) > np.percentile(np.mean(vtemp_vip,0), (1-percentage_keep[v])*100))*1)
+
+#view_stable = []
+#for v, view in enumerate(views):
+#	view_stable.append(view[:,stable_variables[v] == 1])
+
+#model_stable = sgcca_rwrapper(l1_sparsity=1, n_comp=3)
+#model_stable.fit(view_stable)
+
+#def bootstrap_views(views, sample_proportion = 1., with_replacement = True, seed = None, block_groups = None):
+#	"""
+#	Bootstraps with replacement the rows of each view in the input list of views (or scores).
+
+#	Parameters:
+#	-----------
+#	views : list
+#		A list of np.ndarray views data to permute.
+#	seed : int, optional
+#		Seed for the random number generator. Default is None.
+#	block_groups : None or np.array
+#		Set the blocking for bootstrapping (e.g., block_groups = model.group_[model.train_index_])
+#	Returns:
+#	--------
+#	permutedviews : list
+#		A list of np.ndarray views data with permuted rows.
+#		Each element in the list corresponds to a view from the input list.
+#	"""
+
+#	if seed is None:
+#		np.random.seed(np.random.randint(4294967295))
+#	else:
+#		np.random.seed(seed)
+#	
+#	n = len(views[0])
+#	if block_groups is not None: 
+#		indices = []
+#		for group in np.unique(block_groups):
+#			ind_temp = np.argwhere(block_groups == group)[:,0]
+#			ng = len(ind_temp)
+#			indices.append(ind_temp[np.random.choice(ng, size=ng, replace=True)])
+#		indices = np.concatenate(indices)
+#	else:
+#		indices = np.random.choice(n, size=int(n*sample_proportion), replace=with_replacement)
+#	bsviews = []
+#	for v in range(len(views)):
+#		bsviews.append(views[v][indices])
+#	return(bsviews)
+
+
+#def _bootstrap_model_vip(b, model_new, block_groups, seed, convergence_warning = True):
+#	if seed is None:
+#		seed = np.random.randint(4294967295)
+#	np.random.seed(seed)
+#	attempt = 0
+#	for attempt in range(10):
+#		try:
+#			bviews = bootstrap_views(model_new.views_, block_groups=block_groups)
+#			bmdl = sgcca_rwrapper(design_matrix = model_new.design_matrix,
+#										l1_sparsity = model_new.l1_sparsity,
+#										tau = model_new.tau,
+#										n_comp = model_new.n_comp,
+#										scheme = model_new.scheme,
+#										scale = model_new.scale,
+#										init = model_new.init,
+#										bias = True,
+#										tol = model_new.tol).fit(bviews, verbose = False)
+#		except:
+#			if convergence_warning:
+#				print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
+#			bviews = bootstrap_views(model_new.views_, block_groups=block_groups)
+#			bmdl = sgcca_rwrapper(design_matrix = model_new.design_matrix,
+#										l1_sparsity = model_new.l1_sparsity,
+#										tau = model_new.tau,
+#										n_comp = model_new.n_comp,
+#										scheme = model_new.scheme,
+#										scale = model_new.scale,
+#										init = model_new.init,
+#										bias = True,
+#										tol = model_new.tol).fit(bviews, verbose = False)
+#		else:
+#			break
+#	return(bmdl.variable_importance_projection_scores_)
+
+
+#def _bootstrap_model_vip_reg(b, model_new, block_groups, seed, convergence_warning = True):
+#	if seed is None:
+#		seed = np.random.randint(4294967295)
+#	np.random.seed(seed)
+#	attempt = 0
+#	for attempt in range(10):
+#		try:
+#			bviews = bootstrap_views(model_new.views_, block_groups=block_groups)
+#			bmdl = sgcca_rwrapper(design_matrix = model_new.design_matrix,
+#										l1_sparsity = model_new.l1_sparsity,
+#										tau = model_new.tau,
+#										n_comp = model_new.n_comp,
+#										scheme = model_new.scheme,
+#										scale = model_new.scale,
+#										init = model_new.init,
+#										bias = True,
+#										tol = model_new.tol).fit(bviews, verbose = False)
+#			vip_regression_scores = model_new.calculate_vip_score_regression(response_index=0)
+#		except:
+#			if convergence_warning:
+#				print("Convergence error in bootstrapped model. Reshuffling. Try %d/10" % (attempt+1))
+#			bviews = bootstrap_views(model_new.views_, block_groups=block_groups)
+#			bmdl = sgcca_rwrapper(design_matrix = model_new.design_matrix,
+#										l1_sparsity = model_new.l1_sparsity,
+#										tau = model_new.tau,
+#										n_comp = model_new.n_comp,
+#										scheme = model_new.scheme,
+#										scale = model_new.scale,
+#										init = model_new.init,
+#										bias = True,
+#										tol = model_new.tol).fit(bviews, verbose = False)
+#			vip_regression_scores = model_new.calculate_vip_score_regression(response_index=0)
+#		else:
+#			break
+#	return(vip_regression_scores)
+
+
+
+#n_bootstraps = 1000
+#seeds = generate_seeds(n_bootstraps)
+#output_vip = Parallel(n_jobs = 12, backend='multiprocessing')(
+#			delayed(_bootstrap_model_vip_reg)(b = b,
+#												model_new = model,
+#												block_groups = None,
+#												seed = seeds[b]) for b in tqdm(range(n_bootstraps)))
+
+#percentage_keep = np.array([np.mean(np.array(x) != 0) for x in model.weights_outer_])
+#stable_variables = []
+#for v in range(model.n_views_):
+#	vtemp_vip = np.zeros((n_bootstraps, len(output_vip[0][v])))
+#	for b in range(n_bootstraps):
+#		vtemp_vip[b] = output_vip[b][v]
+#	stable_variables.append((np.mean(vtemp_vip,0) > np.percentile(np.mean(vtemp_vip,0), (1-percentage_keep[v])*100))*1)
+
+#view_stable = []
+#for v, view in enumerate(views):
+#	view_stable.append(view[:,stable_variables[v] == 1])
+
+#model_stable = sgcca_rwrapper(l1_sparsity=1, n_comp=3)
+#model_stable.fit(view_stable)
+
+
+
 
 class parallel_sgcca():
 	def __init__(self, n_jobs = 12, n_permutations = 10000, design_matrix = None, initialization = "svd", scheme = "factorial", scale_views = True):
@@ -2272,3 +2593,65 @@ def plot_permuted_model_violin(model, ylabel_metric = "Inner Correlation Metric 
 		plt.close()
 	else:
 		plt.show()
+
+def simulate_view_data(n_samples=100, n_features_x=30, n_features_y=25, n_features_z=20, noise_level=1.0, random_seed=42):
+	"""
+	Generate simulated data for CCA analysis with three views (X, Y, Z).
+
+	Parameters:
+	-----------
+	n_samples : int, optional (default=100)
+		Number of observations.
+	n_features_x : int, optional (default=20)
+		Number of variables in view X (first half structured, second half noise).
+	n_features_y : int, optional (default=15)
+		Number of variables in view Y (first half structured, second half noise).
+	n_features_z : int, optional (default=10)
+		Number of variables in view Z (first half structured, second half noise).
+	noise_level : float, optional (default=1.0)
+		Magnitude of noise added to the data.
+	random_seed : int, optional (default=42)
+		Random seed for reproducibility.
+
+	Returns:
+	--------
+	views : list
+		A list of simulated data for views X, Y, Z.
+	"""
+	# Set seed for reproducibility
+	np.random.seed(random_seed)
+
+	# Generate latent variables (common sources of variation)
+	z1 = np.random.randn(n_samples)
+	z2 = np.random.randn(n_samples)
+
+	# Simulate view X
+	n_structured_x = n_features_x // 2
+	coeff_x_z1 = np.random.randn(n_structured_x)
+	X_part1 = np.outer(z1, coeff_x_z1) + noise_level * np.random.randn(n_samples, n_structured_x)
+	X_part2 = noise_level * np.random.randn(n_samples, n_features_x - n_structured_x)
+	X = np.hstack([X_part1, X_part2])
+
+	# Simulate view Y
+	n_structured_y = n_features_y // 2
+	coeff_y_z1 = np.random.randn(n_structured_y)
+	Y_part1 = np.outer(z1, coeff_y_z1) + noise_level * np.random.randn(n_samples, n_structured_y)
+	Y_part2 = noise_level * np.random.randn(n_samples, n_features_y - n_structured_y)
+	Y = np.hstack([Y_part1, Y_part2])
+
+	# Simulate view Z
+	n_structured_z = n_features_z // 2
+	coeff_z_z2 = np.random.randn(n_structured_z)
+	Z_part1 = np.outer(z2, coeff_z_z2) + noise_level * np.random.randn(n_samples, n_structured_z)
+	Z_part2 = noise_level * np.random.randn(n_samples, n_features_z - n_structured_z)
+	Z = np.hstack([Z_part1, Z_part2])
+
+	views = []
+	views.append(scale(X))
+	views.append(scale(Y))
+	views.append(scale(Z))
+	return(views)
+
+
+
+
