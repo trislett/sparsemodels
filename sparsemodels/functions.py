@@ -757,17 +757,17 @@ class sgcca_rwrapper:
 			vip_scores.append(vip)
 		return(vip_scores)
 
-	def calculate_vip_score_regression(self, response_index = 0):
+	def calculate_vip_score_regression(self, response_index):
 		"""
-		Calculate the vVariable Importance in Projection (VIP) scores for a sgcca-regression analysis.
+		Calculate the Variable Importance in Projection (VIP) scores for a sgcca-regression analysis.
 
 		Parameters:
 		-----------
-		self : sgcca_rwrapper object
+		response_index : int
 
 		Returns:
 		--------
-			vip_regression_scores : list
+		vip_regression_scores : list
 			VIP score for each data-view feature. The response view is the same as self.variable_importance_projection_scores_[response_index].
 		References:
 		--------
@@ -806,6 +806,118 @@ class sgcca_rwrapper:
 				vip_score = np.sqrt((p / total_squared_corrs) * sum_weighted_squares)
 				vip_regression_scores.append(vip_score)
 		return(vip_regression_scores)
+
+	def calculate_wilks_lambda(self, response_index, views = None):
+		"""
+		Calculate Wilks' lambda statistic for pairwise canonical correlation analysis (CCA)
+		between a specified response view and all other predictor views.
+
+		This implementation follows traditional two-view CCA hypothesis testing procedures,
+		computing Wilks' lambda and approximate F-tests for each component across view pairs.
+
+		Parameters
+		----------
+		response_index : int
+			Index of the view to be treated as the response variable. 
+			Must be a valid index in the view indices (0 <= response_index < n_views).
+			
+		views : list of array-like, optional (default=None)
+			List of data views (matrices). If None, uses the views stored in the model object.
+
+		Returns
+		-------
+		pandas.DataFrame
+			Results dataframe containing:
+				Contrast: View pair being compared (e.g., "View0_View1")
+				Component: Canonical component number
+				Canonical Correlation: Correlation coefficient for the component
+				Wilks lambda: Computed Wilk's lambda statistic
+				Num DF: Numerator degrees of freedom for F-test
+				Den DF: Denominator degrees of freedom for F-test
+				F Value: F-statistic value
+				Pr > F: p-value for the F-test
+
+		Raises
+		------
+		AssertionError
+			- If response_index is not a valid view index
+			- If l1_sparsity is not 1.0 (requires non-sparse solution)
+			- If different numbers of components are used across views
+
+		Notes
+		-----
+		1. Specifically designed for pairwise two-view CCA comparisons. The F-test
+			approximation formulas are only valid for two-view CCA.
+		2. Requires non-sparse CCA solutions (l1_sparsity must be 1.0).
+		3. Follows the Wilks' lambda computation from:
+			Mardia, K. V., Bibby, J. M., & Kent, J. T. (1979). Multivariate analysis.
+
+		Examples
+		--------
+		results = model.calculate_wilks_lambda(response_index=0)
+		"""
+		assert hasattr(self,'weights_'), "Error: run fit"
+		view_indices = np.arange(0, self.n_views_)
+		assert response_index in view_indices, "Error: response index in not in view_indices"
+		assert np.mean(self.l1_sparsity)==1., "Error: Wilk's lambda calculation requires that l1_sparsity = 1 (i.e., no sparsity)"
+		ncomps = np.mean(self.n_comp)
+		assert ncomps % 1 == 0, "Error: the number of components must be the same for all data views"
+		ncomps = int(ncomps)
+		if views is None:
+			views = self.views_
+		views = self.scaleviews(views)
+		scores = self.transform(views, calculate_loading = False, outer = False)
+		nobs, k_yvar = views[response_index].shape
+		
+		o_contrasts = []
+		o_components = []
+		o_cc = []
+		o_wilks = []
+		o_numDF = []
+		o_denDF = []
+		o_Fval = []
+		o_pval = []
+		for vidx in view_indices:
+			print(vidx)
+			if vidx != response_index:
+				k_xvar = views[vidx].shape[1]
+				cancorr = np.array([np.corrcoef(scores[response_index,:,i], scores[vidx,:,i])[0, 1] for i in range(ncomps)])
+				eigenvals = np.power(cancorr, 2)
+				prod = 1
+				for i in range(len(eigenvals) - 1, -1, -1):
+					prod *= 1 - eigenvals[i]
+					p = k_yvar - i
+					q = k_xvar - i
+					r = (nobs - k_yvar - 1) - (p - q + 1) / 2
+					u = (p * q - 2) / 4
+					df1 = p * q
+					if p ** 2 + q ** 2 - 5 > 0:
+						t = np.sqrt(((p * q) ** 2 - 4) / (p ** 2 + q ** 2 - 5))
+					else:
+						t = 1
+					df2 = r * t - 2 * u
+					lmd = np.power(prod, 1 / t)
+					F = (1 - lmd) / lmd * df2 / df1
+					o_contrasts.append("View%i_View%i" % (int(response_index), int(vidx)))
+					o_components.append("Component %d" % (int(i+1)))
+					o_cc.append(cancorr[i])
+					o_wilks.append(prod)
+					o_numDF.append(df1)
+					o_denDF.append(df2)
+					o_Fval.append(F)
+					o_pval.append(fdist.sf(F, df1, df2))
+		results = pd.DataFrame()
+		results['Contrast'] = o_contrasts
+		results['Component'] = o_components
+		results['Canonical Correlation'] = np.array(o_cc)
+		results['Wilks lambda'] = np.array(o_wilks)
+		results['Num DF'] = np.array(o_numDF)
+		results['Den DF'] = np.array(o_denDF)
+		results['F Value'] = np.array(o_Fval)
+		results['Pr > F'] = np.array(o_pval)
+		results = results.sort_values(by=['Contrast', 'Component'])
+		return(results)
+
 
 
 #model2 = pickle_load_model('/home/tris/scripts/testing/test_data/model.pkl' )
