@@ -27,7 +27,9 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error
 
 from rpy2.robjects import numpy2ri
+from rpy2.robjects import default_converter
 from rpy2.robjects.packages import importr
+
 # suppress console because of weird permission around r
 from rpy2.rinterface import RRuntimeWarning
 warnings.filterwarnings("ignore", category=RRuntimeWarning)
@@ -479,34 +481,33 @@ class sgcca_rwrapper:
 					tau[v] = calculate_cov_optimal_shrinkage_ss(view)[1]
 				self.tau = np.array(tau)
 
-		numpy2ri.activate()
-		fit = rgcca.rgcca(blocks = self.views_, 
-							connection = self.design_matrix,
-							tau = self.tau,
-							sparsity = self.l1_sparsity,
-							ncomp = self.n_comp, 
-							scheme = self.scheme,
-							scale = False,
-							superblock = self.superblock,
-							scale_block = False,
-							method = str(self.method),
-							init = self.init,
-							bias = self.bias,
-							tol = self.tol,
-							verbose  = False)
-		numpy2ri.deactivate()
-		
-		self.scores_ = np.array(fit.rx2('Y'))
-		self.weights_outer_ = self._rlist_to_nplist(fit.rx2('a'))
-		self.weights_ = self._rlist_to_nplist(fit.rx2('astar'))
-		self.AVE_views_ = np.array(fit.rx2('AVE')[0]) # this is the mean of the structural coefficents
-		self.AVE_outer_ = np.array(fit.rx2('AVE')[2])
-		self.AVE_inner_ = np.array(fit.rx2('AVE')[3])
-		self.variable_importance_projection_scores_ = self._calculate_variable_importance_projection_scores()
-		if np.max(self.n_comp) == 1:
-			self.crit = np.array(fit.rx2('crit'))[-1]
-		else:
-			self.crit = self._final_crit(fit.rx2('crit'))
+		numpy_converter = default_converter + numpy2ri.converter
+		with numpy_converter.context():
+			fit = rgcca.rgcca(blocks = self.views_, 
+								connection = self.design_matrix,
+								tau = self.tau,
+								sparsity = self.l1_sparsity,
+								ncomp = self.n_comp, 
+								scheme = self.scheme,
+								scale = False,
+								superblock = self.superblock,
+								scale_block = False,
+								method = str(self.method),
+								init = self.init,
+								bias = self.bias,
+								tol = self.tol,
+								verbose = False)
+			self.scores_ = np.array(fit.getbyname('Y'))
+			self.weights_outer_ = self._rlist_to_nplist(fit.getbyname('a'))
+			self.weights_ = self._rlist_to_nplist(fit.getbyname('astar'))
+			self.AVE_views_ = np.array(fit.getbyname('AVE')[0])
+			self.AVE_outer_ = np.array(fit.getbyname('AVE')[2])
+			self.AVE_inner_ = np.array(fit.getbyname('AVE')[3])
+			self.variable_importance_projection_scores_ = self._calculate_variable_importance_projection_scores()
+			if np.max(self.n_comp) == 1:
+				self.crit = np.array(fit.getbyname('crit'))[-1]
+			else:
+				self.crit = self._final_crit(fit.getbyname('crit'))
 		return(self)
 
 	def transform(self, views, calculate_loading = False, outer = False):
@@ -1762,7 +1763,6 @@ class parallel_sgcca():
 		tmetric = np.zeros_like(l1_range)
 		tstar_blocks = np.zeros((len(l1_range), n_perm_per_block))
 		parameterselection_l1_penalties = []
-		parameterselection_tau_penalties = []
 		
 		if tau == 'optimal':
 			tau = np.zeros(len(views_train))
